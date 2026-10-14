@@ -5684,10 +5684,10 @@ mod tests {
         let r = hit_rect(&app, &Action::Settings(SAct::Tab(MIDI)));
         click(&mut app, &mut c, r);
         // Controls that do not work yet are greyed out: no toggling, the click only says so.
-        assert!(!app.hits.iter().any(|h| h.action == Action::Settings(SAct::Check("Send master sync"))));
-        let r = hit_rect(&app, &Action::Placeholder("Send master sync"));
+        assert!(!app.hits.iter().any(|h| h.action == Action::Settings(SAct::Check("Send all notes off"))));
+        let r = hit_rect(&app, &Action::Placeholder("Send all notes off"));
         click(&mut app, &mut c, r);
-        assert_eq!(app.state.message.as_deref(), Some("Send master sync: not available yet"));
+        assert_eq!(app.state.message.as_deref(), Some("Send all notes off: not available yet"));
         let r = hit_rect(&app, &Action::Settings(SAct::Tab(PROJECT)));
         click(&mut app, &mut c, r);
         assert!(app.hits.iter().any(|h| h.action == Action::Placeholder("Timebase (PPQ)")), "the PPQ combo is greyed out");
