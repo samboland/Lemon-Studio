@@ -60,6 +60,7 @@ mod misc_page;
 mod song_pos;
 mod stall;
 mod tapper;
+mod tempo;
 mod transport;
 mod views;
 

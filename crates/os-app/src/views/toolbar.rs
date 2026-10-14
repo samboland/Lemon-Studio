@@ -160,7 +160,7 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     }
     // Tempo.
     let tb = Rect::span(517.0, 570.0, 6.0, 34.0);
-    ui.hit(tb, Action::Tempo, "Tempo (drag up/down)");
+    ui.hit(tb, Action::Tempo, "Tempo (drag up/down, Ctrl+drag for decimals; right-click to type a tempo)");
     if lemon {
         os_ui::kit::lemon::well(ui.c, t, tb, t.time_panel);
     } else {

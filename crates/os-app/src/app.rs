@@ -3051,7 +3051,7 @@ impl App {
                 }
                 Drag::SongPosHold { .. } => {}
                 Drag::Tempo { y0, t0 } => {
-                    let t = self.set_tempo(t0 + f64::from(y0 - y).round());
+                    let t = self.set_tempo(crate::tempo::dragged(t0, y0 - y, self.ctrl));
                     self.hint = Cow::Owned(format!("Tempo {t:.3} BPM"));
                     self.damage_rect(TEMPO_RECT);
                     self.damage_rect(HINT_RECT);
@@ -3434,6 +3434,7 @@ impl App {
                 return self.invalidate();
             }
             Some(Action::SongPos) => return self.song_pos_jump(),
+            Some(Action::Tempo) => return crate::tempo::type_in(self),
             Some(Action::BrowserRow(i)) => {
                 if self.browser_remove_root(*i) || self.params_browser_right(*i, x, y) {
                     return;

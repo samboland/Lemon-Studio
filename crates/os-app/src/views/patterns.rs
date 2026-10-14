@@ -80,6 +80,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
             BoxTarget::Name(n) => format!("Pattern {n} name"),
             BoxTarget::Transpose(_) => "Semitones".to_string(),
             BoxTarget::Rack(rb) => crate::rack::box_caption(s, rb),
+            BoxTarget::Tempo => "Tempo (BPM)".to_string(),
         };
         ui.c.text_clip(Font::new(12), x + 44.0, row + 2.0, r.right() - x - 74.0, t.glyph_dim, &caption);
         let tab_col = match b.target {
