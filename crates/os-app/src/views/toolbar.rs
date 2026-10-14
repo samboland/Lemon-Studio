@@ -10,6 +10,11 @@ use crate::icons::{self, Icon};
 /// Leftmost logo centre: just right of the last toolbar control (the news panel / downloads, x 1473).
 const LOGO_MIN_X: f32 = 1520.0;
 
+/// The flat index of entry `label` of menu `menu` (what `Action::MenuItem` takes).
+fn menu_index(menu: usize, label: &str) -> usize {
+    (0..200).find(|&i| menus::item_at(menu, i).is_some_and(|it| it.label == label)).unwrap_or(0)
+}
+
 fn btn(x: f32, y: f32) -> Rect {
     Rect::new(x, y, 30.0, 33.0)
 }
@@ -73,7 +78,26 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
         super::button_face(ui, r, if hov { super::Look::Hover } else { super::Look::Off });
         icons::draw(ui.c, icon, r.inset(3.5), if hov { ui.t.tx(0xffffff) } else { t.glyph });
     }
+    // The panels VIEW > Toolbars shows.
+    type Draw = fn(&mut Ui, &State, &FrameInfo);
+    let panels: [(Panel, Draw); 7] = [
+        (Panel::Hint, hint_bar),
+        (Panel::Transport, transport),
+        (Panel::Recording, recording),
+        (Panel::Time, time),
+        (Panel::Monitor, |ui, s, _| monitor(ui, s)),
+        (Panel::Cpu, cpu),
+        (Panel::Shortcuts, shortcuts),
+    ];
+    for (p, draw) in panels {
+        if shown(p) {
+            draw(ui, s, f);
+        }
+    }
+}
 
+fn hint_bar(ui: &mut Ui, s: &State, f: &FrameInfo) {
+    let t = ui.t;
     // Hint panel: project title + hint / message.
     let hp = Rect::span(72.0, 376.0, 4.0, 36.0);
     sunken(ui, hp, t.sunken);
@@ -82,9 +106,12 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or("") };
     ui.c.text_clip(Font::new(14), 77.0, 19.0, 280.0, t.text, hint);
     icons::draw(ui.c, Icon::MidiControl, Rect::span(360.0, 374.0, 17.0, 32.0), ui.t.s(0x515457));
+}
 
-    // Transport group.
+fn transport(ui: &mut Ui, s: &State, f: &FrameInfo) {
+    let t = ui.t;
     let lemon = super::lemon(ui);
+    // Transport group.
     let capsule = Rect::span(383.0, 483.0, 4.0, 36.0);
     if lemon {
         // Lemon: one rounded-square tray, each section a rounded square inside it.
@@ -160,7 +187,7 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     }
     // Tempo.
     let tb = Rect::span(517.0, 570.0, 6.0, 34.0);
-    ui.hit(tb, Action::Tempo, "Tempo (drag up/down)");
+    ui.hit(tb, Action::Tempo, "Tempo (drag up/down, Ctrl+drag for decimals; right-click to type a tempo)");
     if lemon {
         os_ui::kit::lemon::well(ui.c, t, tb, t.time_panel);
     } else {
@@ -180,7 +207,9 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     ui.c.pop_clip();
     ui.c.fill_polygon(&[(tb.right() - 9.0, 17.0), (tb.right() - 6.0, 13.0), (tb.right() - 3.0, 17.0)], t.glyph_dim);
     ui.c.fill_polygon(&[(tb.right() - 9.0, 22.0), (tb.right() - 6.0, 26.0), (tb.right() - 3.0, 22.0)], t.glyph_dim);
+}
 
+fn recording(ui: &mut Ui, _s: &State, _f: &FrameInfo) {
     // Recording options. The metronome works (spec: ui/metronome.md); the others wait for recording.
     tool_button(ui, btn(580.0, 4.0), Icon::Metronome, crate::metronome::on(), Action::Metronome, "Metronome (Ctrl+M) - right-click for the sound");
     for (i, (icon, hint)) in [
@@ -194,7 +223,12 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     {
         tool_button(ui, btn(613.0 + 33.0 * i as f32, 4.0), icon, false, Action::Placeholder(hint), hint);
     }
+}
 
+fn time(ui: &mut Ui, s: &State, f: &FrameInfo) {
+    let t = ui.t;
+    let lemon = super::lemon(ui);
+    let digits = if lemon { t.pill } else { t.glyph };
     // Song position (B:S:T).
     let tp = Rect::span(745.0, 873.0, 4.0, 36.0);
     if lemon {
@@ -228,9 +262,11 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     ui.c.text(small, tick_x, 9.0, g, &tick_s);
     ui.c.pop_clip();
     ui.c.text(Font::condensed(7, 3).bold(), 852.0, 5.0, if lemon { t.text_dim } else { t.glyph.shade(-0.1) }, "B:S:T");
+}
 
-    // Monitors (oscilloscope / spectrum analyzer, stereo peak bars) and CPU / memory.
-    monitor(ui, s);
+// Monitors (oscilloscope / spectrum analyzer, stereo peak bars: `monitor`) and CPU / memory.
+fn cpu(ui: &mut Ui, s: &State, _f: &FrameInfo) {
+    let t = ui.t;
     // CPU panel (spec: ui/main-window.md §13): audio load (bar, percent, recent history or the Misc counts), memory,
     // voices (or frames per second), dropouts. The hint is the reading in words (`App::tick`).
     let cpu = crate::app::CPU_RECT;
@@ -274,13 +310,15 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     if r.dropouts > 0 {
         ui.c.text_right(Font::condensed(18, 6), 1199.0, 17.0, t.meter_clip, &format!("!{}", r.dropouts.min(9999)));
     }
+}
 
+fn shortcuts(ui: &mut Ui, _s: &State, _f: &FrameInfo) {
     // Utility buttons.
     let utils = [
         (Icon::Undo, "Undo history"),
         (Icon::Cut, "Edit tools"),
         (Icon::Mic, "Audio input / recording"),
-        (Icon::Help, "Help"),
+        (Icon::Help, "Help index"),
         (Icon::Save, "Save project (Ctrl+S)"),
         (Icon::SaveRender, "Export the song as a WAV file (Ctrl+R)"),
         (Icon::Info, "Project info"),
@@ -292,6 +330,7 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
             Icon::Save => Action::MenuItem(0, menus::FILE_SAVE),
             Icon::SaveRender => Action::MenuItem(0, menus::FILE_EXPORT),
             Icon::Info => Action::MenuItem(menus::OPTIONS_MENU, menus::OPT_INFO),
+            Icon::Help => Action::MenuItem(menus::HELP_MENU, menu_index(menus::HELP_MENU, "Help index")),
             _ => Action::Placeholder(hint),
         };
         tool_button(ui, r, icon, false, action, hint);
@@ -399,7 +438,26 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
         }
         ui.c.text(Font::condensed(menus::BAR_FONT.size, width as u16), x0, 51.0, if lemon && open { t.pill_text } else { t.menu_text }, title);
     }
+    // The panels VIEW > Toolbars shows (the menu bar always stays).
+    type Draw = fn(&mut Ui, &State, &FrameInfo);
+    let panels: [(Panel, Draw); 7] = [
+        (Panel::Main, main_knobs),
+        (Panel::SongPos, song_pos),
+        (Panel::Modes, modes),
+        (Panel::Snap, snap),
+        (Panel::Pattern, pattern),
+        (Panel::Windows, windows),
+        (Panel::News, news),
+    ];
+    for (p, draw) in panels {
+        if shown(p) {
+            draw(ui, s, f);
+        }
+    }
+}
 
+fn main_knobs(ui: &mut Ui, s: &State, _f: &FrameInfo) {
+    let t = ui.t;
     // Main volume and main pitch (project values; spec: audio/mixer.md "Main volume", audio/voice-levels.md).
     use crate::knobs::KnobId;
     ui.hit(Rect::span(303.0, 337.0, 45.0, 77.0), Action::Knob(KnobId::MasterVol), s.knob_text(KnobId::MasterVol));
@@ -410,7 +468,11 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
         let a = 0.75 * std::f32::consts::PI + 1.5 * std::f32::consts::PI * k as f32 / 19.0;
         ui.c.fill_circle(358.0 + 17.5 * a.cos(), 61.0 + 17.5 * a.sin(), 0.7, t.glyph_dim);
     }
+}
 
+fn song_pos(ui: &mut Ui, s: &State, f: &FrameInfo) {
+    let t = ui.t;
+    let lemon = super::lemon(ui);
     // Song position slider (spec: ui/song-position-slider.md): the handle follows the playhead while playing.
     let sp = crate::song_pos::PANEL;
     let range = crate::song_pos::range(s);
@@ -453,7 +515,9 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
             None => ui.c.fill_rect(Rect::new(395.0, 56.0, 1.0, 12.0), ui.t.s(0x282b2d)),
         }
     }
+}
 
+fn modes(ui: &mut Ui, s: &State, _f: &FrameInfo) {
     // Mode buttons (spec: ui/main-window.md §3). Typing keyboard, auto scrolling (spec: ui/auto-scrolling.md) and enable
     // groups (spec: ui/enable-groups.md) work.
     for (i, (icon, hint)) in [
@@ -474,7 +538,11 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
         };
         tool_button(ui, btn(580.0 + 33.0 * i as f32, 45.0), icon, on, action, hint);
     }
+}
 
+fn snap(ui: &mut Ui, _s: &State, _f: &FrameInfo) {
+    let t = ui.t;
+    let lemon = super::lemon(ui);
     // Snap.
     icons::draw(ui.c, Icon::Magnet, Rect::span(748.0, 766.0, 52.0, 70.0), t.glyph_dim.shade(0.3));
     let snap = Rect::span(768.0, 830.0, 50.0, 72.0);
@@ -487,7 +555,11 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
     ui.c.text(Font::new(16), snap.x + 5.0, 51.0, t.glyph, "Line");
     icons::draw(ui.c, Icon::ArrowRight, Rect::new(snap.right() - 14.0, 55.0, 12.0, 12.0), t.glyph_dim);
     ui.veil(Rect::span(746.0, 831.0, 50.0, 72.0), t.toolbar);
+}
 
+fn pattern(ui: &mut Ui, s: &State, _f: &FrameInfo) {
+    let t = ui.t;
+    let lemon = super::lemon(ui);
     // Pattern selector.
     let prev = Rect::span(838.0, 851.0, 47.0, 76.0);
     ui.hit(prev, Action::PatternPrev, "Pattern options"); // spec: ui/pattern-menu.md §1
@@ -513,7 +585,10 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
     let add = Rect::span(951.0, 962.0, 50.0, 72.0);
     ui.hit(add, Action::PatternAdd, "New pattern (find first / next empty)");
     icons::draw(ui.c, Icon::Plus, add, t.glyph);
+}
 
+fn windows(ui: &mut Ui, s: &State, _f: &FrameInfo) {
+    let t = ui.t;
     // Window buttons.
     let wins = [
         (Icon::Playlist, Action::ToggleWin(Win::Playlist), s.shown(Win::Playlist), "Playlist (F5)"),
@@ -521,7 +596,7 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
         (Icon::ChannelRack, Action::ToggleWin(Win::ChannelRack), s.shown(Win::ChannelRack), "Channel rack (F6)"),
         (Icon::Mixer, Action::ToggleWin(Win::Mixer), s.shown(Win::Mixer), "Mixer (F9)"),
         (Icon::Browser, Action::ToggleWin(Win::Browser), s.show_browser, "Browser (Alt+F8)"),
-        (Icon::Project, Action::Placeholder("Project picker"), false, "Project picker"),
+        (Icon::Project, Action::MenuItem(menus::VIEW, menu_index(menus::VIEW, "Project picker")), false, "Project picker (Ctrl+F8)"),
         (Icon::Plug, Action::PickerOpen, false, "Add a plugin (F8)"),
         (Icon::Kick, Action::ToggleWin(Win::Tapper), s.shown(Win::Tapper), "Tempo tapper (Ctrl+F5)"),
         (Icon::Touch, Action::Placeholder("Touch controller"), false, "Touch controller"),
@@ -538,7 +613,11 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
         let _ = open;
         icons::draw(ui.c, icon, Rect::new(r.x + 5.0, r.y + 6.5, 20.0, 20.0), if hov { t.on_glyph } else { t.glyph });
     }
+}
 
+fn news(ui: &mut Ui, _s: &State, _f: &FrameInfo) {
+    let t = ui.t;
+    let lemon = super::lemon(ui);
     // News panel.
     let np = Rect::span(1304.0, 1470.0, 45.0, 77.0);
     {
@@ -566,6 +645,170 @@ pub fn bst_ticks(ticks: f64) -> (u32, u32, u32) {
     let per_step = 96 / 4;
     let steps = ticks / per_step;
     (steps / 16 + 1, steps % 16 + 1, ticks % per_step)
+}
+
+// ---------------------------------------------------------------- VIEW > Toolbars (shown panels)
+
+/// The toolbar's panels VIEW > Toolbars shows and hides. A hidden panel leaves its place empty (the others never move);
+/// the menu bar always stays, or the menus could not be reached again. Which are hidden is a program setting, kept in
+/// the user folder (`toolbars.txt`). Lemon Studio choice: FL's panels can also be dragged around; Lemon's stay put.
+// spec: ui/main-window.md §1-3, ui/menus.md (VIEW)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panel {
+    Hint,
+    Transport,
+    Recording,
+    Time,
+    Monitor,
+    Cpu,
+    Shortcuts,
+    Main,
+    SongPos,
+    Modes,
+    Snap,
+    Pattern,
+    Windows,
+    News,
+}
+
+impl Panel {
+    pub const ALL: [Panel; 14] = [
+        Panel::Hint,
+        Panel::Transport,
+        Panel::Recording,
+        Panel::Time,
+        Panel::Monitor,
+        Panel::Cpu,
+        Panel::Shortcuts,
+        Panel::Main,
+        Panel::SongPos,
+        Panel::Modes,
+        Panel::Snap,
+        Panel::Pattern,
+        Panel::Windows,
+        Panel::News,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Panel::Hint => "Hint bar",
+            Panel::Transport => "Transport and tempo",
+            Panel::Recording => "Recording and metronome",
+            Panel::Time => "Song position display",
+            Panel::Monitor => "Output monitor",
+            Panel::Cpu => "CPU and memory",
+            Panel::Shortcuts => "Shortcuts",
+            Panel::Main => "Main volume and pitch",
+            Panel::SongPos => "Song position slider",
+            Panel::Modes => "Mode switches",
+            Panel::Snap => "Snap",
+            Panel::Pattern => "Pattern selector",
+            Panel::Windows => "Window buttons",
+            Panel::News => "News",
+        }
+    }
+
+    /// Its name in `toolbars.txt`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Panel::Hint => "hint",
+            Panel::Transport => "transport",
+            Panel::Recording => "recording",
+            Panel::Time => "time",
+            Panel::Monitor => "monitor",
+            Panel::Cpu => "cpu",
+            Panel::Shortcuts => "shortcuts",
+            Panel::Main => "main",
+            Panel::SongPos => "songpos",
+            Panel::Modes => "modes",
+            Panel::Snap => "snap",
+            Panel::Pattern => "pattern",
+            Panel::Windows => "windows",
+            Panel::News => "news",
+        }
+    }
+
+    fn bit(self) -> u32 {
+        1 << Panel::ALL.iter().position(|&p| p == self).unwrap_or(0)
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+static HIDDEN: std::sync::OnceLock<std::sync::Mutex<u32>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    /// Tests run in parallel threads: each has its own panels (all shown), and nothing is written.
+    static TEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `f` on the hidden panels' bits; keeps them when `f` changed them.
+fn with_hidden<R>(f: impl FnOnce(&mut u32) -> R) -> R {
+    #[cfg(test)]
+    return TEST.with(|c| {
+        let mut h = c.get();
+        let r = f(&mut h);
+        c.set(h);
+        r
+    });
+    #[cfg(not(test))]
+    {
+        let mut h = HIDDEN.get_or_init(|| std::sync::Mutex::new(load_hidden())).lock().unwrap_or_else(|e| e.into_inner());
+        let before = *h;
+        let r = f(&mut h);
+        if *h != before {
+            save_hidden(*h);
+        }
+        r
+    }
+}
+
+pub fn shown(p: Panel) -> bool {
+    with_hidden(|h| *h & p.bit() == 0)
+}
+
+/// Shows or hides panel `p`; returns whether it is shown now.
+pub fn toggle_panel(p: Panel) -> bool {
+    with_hidden(|h| {
+        *h ^= p.bit();
+        *h & p.bit() == 0
+    })
+}
+
+pub fn show_all_panels() {
+    with_hidden(|h| *h = 0);
+}
+
+/// `hidden=<key>,<key>` (missing: every panel shown); unknown names and other lines are ignored.
+pub fn parse_hidden(text: &str) -> u32 {
+    let mut h = 0;
+    for line in text.lines() {
+        let Some(("hidden", v)) = line.split_once('=').map(|(k, v)| (k.trim(), v)) else { continue };
+        for k in v.split(',').map(str::trim) {
+            if let Some(p) = Panel::ALL.iter().find(|p| p.key() == k) {
+                h |= p.bit();
+            }
+        }
+    }
+    h
+}
+
+pub fn hidden_text(h: u32) -> String {
+    let keys: Vec<&str> = Panel::ALL.iter().filter(|p| h & p.bit() != 0).map(|p| p.key()).collect();
+    format!("hidden={}\n", keys.join(","))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn load_hidden() -> u32 {
+    os_paths::user_file("toolbars.txt").and_then(|f| std::fs::read_to_string(f).ok()).map_or(0, |t| parse_hidden(&t))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn save_hidden(h: u32) {
+    if let Some(dir) = os_paths::user_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("toolbars.txt"), hidden_text(h));
+    }
 }
 
 #[cfg(test)]

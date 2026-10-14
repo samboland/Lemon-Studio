@@ -127,47 +127,68 @@ pub fn paint(ui: &mut Ui, s: &State, _f: &FrameInfo) {
         }
     }
 
-    // − nudge / nudge + (§1, §6): not available yet, drawn greyed out.
+    // - nudge / nudge + (§1, §6): during playback, move the song a little earlier / later.
     let dim = if lemon { t.text_faint } else { t.tx(0x9a9fa2) };
     let (left, right) = (at(20.0, 167.0, 57.0, 38.0), at(78.0, 167.0, 58.0, 38.0));
-    ui.off(left, "Nudge tempo to align time (Left / pitch bend)");
-    ui.off(right, "Nudge tempo to align time (Right / pitch bend)");
-    if lemon {
-        // Lemon's greyed-out rule: an outline only, no fill.
-        for r in [left, right] {
-            ui.c.stroke_rrect(r, lk::r_btn(t), 1.0, t.s(0x34383a));
+    let hl = ui.hit(left, Action::Tapper(TapAct::Nudge(-1)), "Nudge: move the song a little earlier (during playback)");
+    let hr = ui.hit(right, Action::Tapper(TapAct::Nudge(1)), "Nudge: move the song a little later (during playback)");
+    let (top, bot) = (left.y, left.bottom());
+    for (r, hov) in [(left, hl), (right, hr)] {
+        let down = ui.down(r, &Action::Tapper(TapAct::Nudge(if r == left { -1 } else { 1 })));
+        if lemon {
+            let face = if down { t.s(0x3a3e40) } else if hov { t.s(0x2e3234) } else { t.s(0x26292b) };
+            lk::outlined(ui.c, r, lk::r_btn(t), line, face);
+        } else {
+            let face = if down { t.s(0x2c3031) } else if hov { t.s(0x26292a) } else { t.s(0x1e2122) };
+            let poly = if r == left {
+                vec![(r.x, top), (r.right(), top), (r.right(), bot), (r.x + 7.0, bot)]
+            } else {
+                vec![(r.x, top), (r.right(), top), (r.right() - 7.0, bot), (r.x, bot)]
+            };
+            ui.c.fill_polygon(&poly, face);
         }
-    } else {
-        let (top, bot) = (left.y, left.bottom());
-        let face = t.s(0x1e2122);
-        ui.c.fill_polygon(&[(left.x, top), (left.right(), top), (left.right(), bot), (left.x + 7.0, bot)], face);
-        ui.c.fill_polygon(&[(right.x, top), (right.right(), top), (right.right() - 7.0, bot), (right.x, bot)], face);
+    }
+    if !lemon {
         ui.c.fill_rect(Rect::new(left.right(), top, 1.0, bot - top), line);
     }
     let nf = Font::new(15);
-    label(ui, nf, left.cx() + 2.0, left.cy(), true, dim, "- nudge");
-    label(ui, nf, right.cx() - 2.0, right.cy(), true, dim, "nudge +");
+    let ink = |hov: bool| if hov { t.tx(0xffffff) } else { t.text };
+    label(ui, nf, left.cx() + 2.0, left.cy(), true, ink(hl), "- nudge");
+    label(ui, nf, right.cx() - 2.0, right.cy(), true, ink(hr), "nudge +");
 
-    // Sync, Mute (switches) and now (a button): not available yet (§6, §8); with Apply tempo off FL greys them too.
+    // Sync, Mute (switches) and now (a button), §6-8: with Apply tempo off FL greys them out (they only say so).
     let lf = Font::new(14);
     let cy = y0 + 231.0;
-    ui.off(at(5.0, 222.0, 43.0, 18.0), "Resynchronize to taps");
-    led(ui, x0 + 14.0, cy, set.sync, false, true);
-    label(ui, lf, x0 + 26.0, cy, false, dim, "Sync");
-    ui.off(at(59.0, 222.0, 48.0, 18.0), "Mute all audio during first taps (during playback)");
-    led(ui, x0 + 68.0, cy, set.mute, false, true);
-    label(ui, lf, x0 + 79.0, cy, false, dim, "Mute");
+    let live = set.apply;
+    let sw = |a: TapAct, hint: &'static str| if live { (Action::Tapper(a), hint) } else { (Action::Swallow, "Turn Apply tempo on first") };
+    let (a, h) = sw(TapAct::Sync, "Sync: each tap puts the song on the beat (during playback)");
+    let hs = ui.hit(at(5.0, 222.0, 43.0, 18.0), a, h) && live;
+    led(ui, x0 + 14.0, cy, set.sync, hs, !live);
+    label(ui, lf, x0 + 26.0, cy, false, if !live { dim } else { ink(hs) }, "Sync");
+    let (a, h) = sw(TapAct::Mute, "Mute all audio during the first taps (during playback)");
+    let hm = ui.hit(at(59.0, 222.0, 48.0, 18.0), a, h) && live;
+    led(ui, x0 + 68.0, cy, set.mute, hm, !live);
+    label(ui, lf, x0 + 79.0, cy, false, if !live { dim } else { ink(hm) }, "Mute");
     let now = at(109.0, 219.0, 42.0, 25.0);
-    ui.off(now, "Mute now, for a few bars (during playback)");
+    let (a, h) = sw(TapAct::Now, "Mute now, for two bars (during playback)");
+    let hn = ui.hit(now, a, h) && live;
+    // Lit while the song is muted.
+    let lit = tap.muted || tap.mute_until.is_some();
     if lemon {
-        ui.c.stroke_rrect(now, lk::r_btn(t), 1.0, t.s(0x34383a));
+        if !live {
+            ui.c.stroke_rrect(now, lk::r_btn(t), 1.0, t.s(0x34383a));
+        } else {
+            let face = if lit { t.h(0xe8461c) } else if hn { t.s(0x2e3234) } else { t.s(0x26292b) };
+            lk::outlined(ui.c, now, lk::r_btn(t), line, face);
+        }
     } else {
-        ui.c.fill_polygon(&[(now.x, now.y), (now.right(), now.y), (now.right(), now.bottom()), (now.x + 6.0, now.bottom())], t.s(0x1e2122));
+        let face = if lit { t.h(0xe8461c) } else if hn { t.s(0x26292a) } else { t.s(0x1e2122) };
+        ui.c.fill_polygon(&[(now.x, now.y), (now.right(), now.y), (now.right(), now.bottom()), (now.x + 6.0, now.bottom())], face);
     }
-    label(ui, lf, now.cx() + 2.0, now.cy(), true, dim, "now");
-    if !lemon {
+    label(ui, lf, now.cx() + 2.0, now.cy(), true, if !live { dim } else { ink(hn || lit) }, "now");
+    if !lemon && !live {
         // Classic greys out by veiling the faces with the background.
-        for r in [Rect::new(left.x, left.y, right.right() - left.x, left.h), at(5.0, 222.0, 102.0, 18.0), now] {
+        for r in [at(5.0, 222.0, 102.0, 18.0), now] {
             ui.veil(r, bg);
         }
     }

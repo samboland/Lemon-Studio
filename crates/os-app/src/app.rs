@@ -2258,6 +2258,7 @@ impl App {
                     }
                 }
             }
+            a => self.tapper_more(a),
         }
         self.damage_win(Win::Tapper);
     }
@@ -2278,6 +2279,7 @@ impl App {
         if let Some(bpm) = bpm.filter(|_| crate::tapper::get().apply) {
             self.set_tempo(bpm);
         }
+        self.tapper_tapped();
         self.damage_win(Win::Tapper);
     }
 
@@ -2435,6 +2437,7 @@ impl App {
             self.state.message = Some(format!("Audio: {e}"));
             self.invalidate();
         }
+        crate::log::watch(self);
         // CPU panel (spec: ui/main-window.md §13) and the Plugin performance monitor: a reading at the panel's refresh
         // rate.
         let now = std::time::Instant::now();
@@ -2463,10 +2466,8 @@ impl App {
                 }
             }
         }
-        // The tapper's pad fades back after a tap (spec: ui/tempo-tapper.md §4).
-        if self.state.tapper.fade(now) && self.state.shown(Win::Tapper) {
-            self.damage_rect(views::tapper::pad_rect(&self.state));
-        }
+        // The tapper's pad fades back after a tap, its muting ends (spec: ui/tempo-tapper.md §4, §7).
+        self.tapper_tick(now);
         // Mixer meters (spec: ui/mixer.md §9): fall back after playback stops.
         let peaks = self.transport.take_track_peaks();
         if crate::mixer::feed_meters(&mut self.state, &peaks) && self.state.shown(Win::Mixer) {
@@ -3051,7 +3052,7 @@ impl App {
                 }
                 Drag::SongPosHold { .. } => {}
                 Drag::Tempo { y0, t0 } => {
-                    let t = self.set_tempo(t0 + f64::from(y0 - y).round());
+                    let t = self.set_tempo(crate::tempo::dragged(t0, y0 - y, self.ctrl));
                     self.hint = Cow::Owned(format!("Tempo {t:.3} BPM"));
                     self.damage_rect(TEMPO_RECT);
                     self.damage_rect(HINT_RECT);
@@ -3434,6 +3435,7 @@ impl App {
                 return self.invalidate();
             }
             Some(Action::SongPos) => return self.song_pos_jump(),
+            Some(Action::Tempo) => return crate::tempo::type_in(self),
             Some(Action::BrowserRow(i)) => {
                 if self.browser_remove_root(*i) || self.params_browser_right(*i, x, y) {
                     return;
@@ -6053,18 +6055,10 @@ mod tests {
         assert_eq!(views::tapper::rect(&app.state), Rect::new(882.0, 393.0, 156.0, 294.0), "156 x 294, centred over the main window");
         let row = bar_model(&app.state)[VIEW].rows.iter().find(|r| r.label == "Tempo tapper").cloned().unwrap();
         assert_eq!((row.enabled, row.mark, row.shortcut), (true, Mark::Check(true), "Ctrl+F5"));
-        // The hints; the controls that do nothing yet only say so.
+        // The hints; every control works (nudge, Sync, Mute and now: `tapper.rs` tests).
         let hint = |app: &App, a: &Action| app.hits.iter().rev().find(|h| &h.action == a).map(|h| h.hint.to_string()).unwrap();
         assert_eq!(hint(&app, &Action::Tapper(TapAct::Pad)), "Tap me, or press any key on your MIDI keyboard");
-        for name in [
-            "Nudge tempo to align time (Left / pitch bend)",
-            "Nudge tempo to align time (Right / pitch bend)",
-            "Resynchronize to taps",
-            "Mute all audio during first taps (during playback)",
-            "Mute now, for a few bars (during playback)",
-        ] {
-            assert_eq!(hint(&app, &Action::Placeholder(name)), format!("{name}: not available yet"));
-        }
+        assert!(!app.hits.iter().any(|h| matches!(h.action, Action::Placeholder(_)) && views::tapper::rect(&app.state).contains(h.rect.cx(), h.rect.cy())));
 
         // Apply tempo on (the default): from the second tap, every tempo is the project's.
         let pad = hit_rect(&app, &Action::Tapper(TapAct::Pad));

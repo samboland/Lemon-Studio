@@ -18,6 +18,7 @@ mod enable_groups;
 mod icons;
 mod knobs;
 mod loading;
+mod log;
 mod logo;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -55,11 +56,13 @@ mod plugin_window;
 mod plugins;
 mod project_plugins;
 mod presets;
+mod project_picker;
 mod misc;
 mod misc_page;
 mod song_pos;
 mod stall;
 mod tapper;
+mod tempo;
 mod transport;
 mod views;
 

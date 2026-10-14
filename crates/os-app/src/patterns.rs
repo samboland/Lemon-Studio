@@ -97,6 +97,8 @@ pub enum BoxTarget {
     Transpose(u16),
     /// The channel rack's boxes (spec: ui/channel-rack.md §13, §17, §21).
     Rack(crate::rack::RBox),
+    /// The toolbar's tempo, typed in (`tempo.rs`).
+    Tempo,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,6 +268,7 @@ pub fn open_name_box(s: &mut State, target: BoxTarget, at: (f32, f32)) {
         BoxTarget::Name(n) => name_of(s, n),
         BoxTarget::Transpose(_) => String::new(),
         BoxTarget::Rack(b) => crate::rack::box_text(s, b),
+        BoxTarget::Tempo => crate::tempo::text(s.tempo),
     };
     s.pat_ui.name_box = Some(NameBox { target, text, fresh: true, at, suggestions: false, palette: false });
 }
@@ -385,6 +388,7 @@ pub fn accept(s: &mut State) {
             crate::rack::box_accept(s, rb, &b.text);
             s.piano.dirty = true;
         }
+        BoxTarget::Tempo => crate::tempo::accept(s, &b.text),
     }
 }
 
