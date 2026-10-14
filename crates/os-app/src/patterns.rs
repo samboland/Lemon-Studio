@@ -1,5 +1,5 @@
 //! Pattern selector and PATTERNS menu commands: find empty, rename / colour, clone, insert, delete, move,
-//! transpose, plus the name box and the delete confirmation.
+//! transpose, time signature, split by channel, render as audio clip, plus the name box and the delete confirmation.
 // spec: ui/pattern-menu.md
 
 use os_model::{ClipSource, Pattern, Rgb};
@@ -39,6 +39,14 @@ pub enum Cmd {
     Delete,
     MoveUp,
     MoveDown,
+    /// A time signature of the pattern's own (a dialog: the playlist's text box).
+    TimeSignature,
+    SplitByChannel,
+    /// Render to an audio clip: at once, cut at the pattern's end; with the name dialog, the tail kept; the same and
+    /// the pattern's clips replaced (`playlist::render_pattern`).
+    QuickRender,
+    Render,
+    RenderReplace,
 }
 
 impl Cmd {
@@ -58,6 +66,11 @@ impl Cmd {
             "Delete" => Cmd::Delete,
             "Move up" => Cmd::MoveUp,
             "Move down" => Cmd::MoveDown,
+            "Set time signature..." => Cmd::TimeSignature,
+            "Split by channel" => Cmd::SplitByChannel,
+            "Quick render as audio clip" => Cmd::QuickRender,
+            "Render as audio clip..." => Cmd::Render,
+            "Render and replace..." => Cmd::RenderReplace,
             _ => return None,
         })
     }
@@ -343,8 +356,64 @@ pub fn run(s: &mut State, cmd: Cmd, at: (f32, f32)) -> Option<String> {
             s.pattern = cur + 1;
         }
         Cmd::MoveUp | Cmd::MoveDown => {}
+        Cmd::TimeSignature => crate::playlist::start_edit(s, crate::playlist::EditTarget::PatternSignature(cur), at),
+        Cmd::SplitByChannel => return Some(split_by_channel(s, cur)),
+        Cmd::QuickRender => {
+            let name = name_of(s, cur);
+            return Some(crate::playlist::render_pattern(s, cur, false, false, &name));
+        }
+        Cmd::Render | Cmd::RenderReplace => {
+            crate::playlist::start_edit(s, crate::playlist::EditTarget::RenderPattern(cur, cmd == Cmd::RenderReplace), at);
+        }
     }
     None
+}
+
+/// Split by channel (§3): pattern `n` gives one new pattern per channel it holds notes or control points of, named
+/// "<pattern> - <channel>", in the first empty numbers; in the playlist each of its clips becomes clips of those
+/// patterns, the first in its place and the others on the next free tracks below (Lemon Studio choice). The pattern
+/// itself stays. Returns the message to show.
+pub fn split_by_channel(s: &mut State, n: u16) -> String {
+    let Some(p) = s.project.pattern(n).cloned() else { return format!("Split by channel: {} is empty", name_of(s, n)) };
+    let mut chans: Vec<u16> = p.notes.iter().map(|x| x.channel).chain(p.controls.iter().map(|c| c.channel())).collect();
+    chans.sort_unstable();
+    chans.dedup();
+    if chans.len() < 2 {
+        return format!("Split by channel: {} holds {} channel", name_of(s, n), if chans.is_empty() { "no" } else { "one" });
+    }
+    crate::playlist::snapshot(s);
+    let base = name_of(s, n);
+    let mut made = Vec::new();
+    for &ch in &chans {
+        let num = first_empty(s);
+        let ch_name = crate::playlist::source_name(s, ClipSource::Channel(ch));
+        let q = pat_mut(s, num);
+        q.name = Some(format!("{base} - {ch_name}"));
+        q.color = p.color;
+        q.length = p.length;
+        q.notes = p.notes.iter().filter(|x| x.channel == ch).copied().collect();
+        q.controls = p.controls.iter().filter(|c| c.channel() == ch).copied().collect();
+        q.loops = p.loops.iter().filter(|l| l.0 == ch).copied().collect();
+        q.loop_off = p.loop_off;
+        q.markers = p.markers.clone();
+        made.push(num);
+    }
+    // Each clip of the pattern: the first part takes its place, the others go below it.
+    let idx: Vec<usize> = crate::playlist::clips(s).iter().enumerate().filter(|(_, c)| c.source == ClipSource::Pattern(n)).map(|(i, _)| i).collect();
+    for &i in &idx {
+        let c = crate::playlist::clips(s)[i];
+        crate::playlist::arr_mut(s).clips[i].source = ClipSource::Pattern(made[0]);
+        for &num in &made[1..] {
+            let t = crate::playlist::free_track(s, (c.track + 1).min(crate::playlist::TRACKS - 1), c.position, c.end());
+            crate::playlist::arr_mut(s).clips.push(os_model::Clip { track: t, source: ClipSource::Pattern(num), ..c });
+            let k = crate::playlist::clips(s).len() - 1;
+            crate::playlist::arr_mut(s).clips[k].set_id(0);
+        }
+    }
+    s.pattern = made[0];
+    s.playlist.sel.clear();
+    s.piano.dirty = true;
+    format!("Split {base} into {} patterns", made.len())
 }
 
 /// Ok in the delete confirmation (channels waiting in the rack go to the app, which removes them).
@@ -489,6 +558,7 @@ pub fn key(s: &mut State, key: &winit::keyboard::Key, ctrl: bool) -> bool {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::views::menus::PATTERNS as PATTERNS_MENU;
     use os_model::{Clip, Note};
 
     fn app() -> App {
@@ -573,6 +643,130 @@ mod tests {
         key(s, &winit::keyboard::Key::Character("Bass".into()), false);
         accept(s);
         assert_eq!(crate::views::playlist::pick_items(s).len(), before.len() + 1);
+    }
+
+    /// The PATTERNS entries this build handles work (no longer "not available yet").
+    #[test]
+    fn render_split_and_signature_entries_work() {
+        use crate::views::menus::{item_at, works, Kind};
+        for label in ["Set time signature...", "Split by channel", "Quick render as audio clip", "Render as audio clip...", "Render and replace..."] {
+            let item = (0..200).filter_map(|i| item_at(PATTERNS_MENU, i)).find(|it| it.label == label && it.kind == Kind::Item).expect(label);
+            assert!(works(PATTERNS_MENU, item), "{label}");
+        }
+    }
+
+    /// Set time signature...: a box with the pattern's signature; Enter puts a signature marker at its start.
+    #[test]
+    fn pattern_time_signature() {
+        let mut app = app();
+        let s = &mut app.state;
+        s.pattern = 3;
+        run(s, Cmd::TimeSignature, (0.0, 0.0));
+        let e = s.playlist.edit.as_mut().expect("the signature box");
+        assert_eq!((e.target, e.text.as_str()), (crate::playlist::EditTarget::PatternSignature(3), "4/4"));
+        e.text = "3/4".into();
+        crate::playlist::commit_edit(s);
+        let m = &s.project.pattern(3).unwrap().markers;
+        assert_eq!((m.len(), m[0].kind, m[0].numerator, m[0].denominator), (1, os_model::TimeMarker::SIGNATURE, 3, 4));
+        // Again: the marker is replaced, not added.
+        run(s, Cmd::TimeSignature, (0.0, 0.0));
+        assert_eq!(s.playlist.edit.as_ref().unwrap().text, "3/4");
+        s.playlist.edit.as_mut().unwrap().text = "6/8".into();
+        crate::playlist::commit_edit(s);
+        assert_eq!(crate::playlist::pattern_signature(s, 3), (6, 8));
+        assert_eq!(s.project.pattern(3).unwrap().markers.len(), 1);
+    }
+
+    /// Split by channel: one pattern per channel, named after it; each clip of the pattern becomes clips of those.
+    #[test]
+    fn split_by_channel() {
+        let mut app = app();
+        let s = &mut app.state;
+        let (a, b) = (s.project.channels[0].index, s.project.channels[2].index);
+        s.project.patterns[0].notes = vec![Note::step(a, 0), Note::step(b, 48), Note::step(a, 96)];
+        s.pattern = 1;
+        let m = run(s, Cmd::SplitByChannel, (0.0, 0.0)).unwrap();
+        assert_eq!(m, "Split Kick into 2 patterns");
+        assert_eq!((name_of(s, 4), name_of(s, 6)), ("Kick - Kick".to_string(), "Kick - Hat".to_string()));
+        assert_eq!(s.project.pattern(4).unwrap().notes.len(), 2);
+        assert_eq!(s.project.pattern(6).unwrap().notes.len(), 1);
+        // Pattern 1's clip on track 0: pattern 4 in its place, pattern 6 on the next free track (track 1 holds a clip).
+        let cs = crate::playlist::clips(s);
+        assert!(cs.iter().any(|c| c.source == ClipSource::Pattern(4) && c.track == 0 && c.position == 0));
+        assert!(cs.iter().any(|c| c.source == ClipSource::Pattern(6) && c.track == 2 && c.length == 384));
+        assert!(!cs.iter().any(|c| c.source == ClipSource::Pattern(1)));
+        assert_eq!(name_of(s, 1), "Kick", "the pattern itself stays");
+        // A one-channel pattern has nothing to split.
+        s.pattern = 2;
+        assert_eq!(run(s, Cmd::SplitByChannel, (0.0, 0.0)).as_deref(), Some("Split by channel: Kick #2 holds one channel"));
+    }
+
+    /// A project whose channel 0 plays a WAV of constant 0.5 (no device: the engine's own sampler renders it).
+    fn render_app() -> (App, std::path::PathBuf) {
+        let mut app = app();
+        let wav = std::env::temp_dir().join(format!("os-app-pattern-render-{}-{:?}.wav", std::process::id(), std::thread::current().id()));
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 44100, &[0.5; 44100 * 2]).unwrap();
+        let s = &mut app.state;
+        s.path = None;
+        s.project.channels[0].sample_path = Some(wav.to_string_lossy().into_owned());
+        s.project.patterns[0].notes = vec![Note { length: 96, ..Note::step(s.project.channels[0].index, 0) }];
+        (app, wav)
+    }
+
+    /// Quick render as audio clip: pattern 1 becomes a new audio clip channel (the picker's current source) whose
+    /// file holds the sound, cut at the pattern's end.
+    #[test]
+    fn quick_render_as_audio_clip() {
+        let (mut app, wav) = render_app();
+        let s = &mut app.state;
+        s.pattern = 1;
+        let n = s.project.channels.len();
+        let clips_before = crate::playlist::clips(s).to_vec();
+        let m = run(s, Cmd::QuickRender, (0.0, 0.0)).unwrap();
+        assert_eq!(m, "Rendered Kick to an audio clip");
+        let ch = &s.project.channels[n];
+        // Named after the pattern, apart from the channel called so.
+        assert_eq!((ch.kind, ch.name.as_deref()), (os_model::ChannelKind::AudioClip, Some("Kick #2")));
+        let file = std::path::PathBuf::from(ch.sample_path.clone().unwrap());
+        let w = s.playlist.wave(&file.to_string_lossy()).expect("the render reads back");
+        // One bar at 130 BPM (the pattern's whole bar).
+        let bar_secs = 4.0 * 60.0 / s.tempo;
+        assert!((w.secs() - bar_secs).abs() < 0.01, "{} s", w.secs());
+        assert!(w.peaks.iter().any(|&(lo, hi)| hi.abs().max(lo.abs()) > 0.01), "the note sounds");
+        assert_eq!(s.playlist.source, Some(ClipSource::Channel(ch.index)));
+        assert_eq!(crate::playlist::clips(s), clips_before.as_slice(), "the playlist is untouched");
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&wav);
+    }
+
+    /// Render and replace...: the name box, then the pattern's clips become audio clips playing the same part.
+    #[test]
+    fn render_and_replace() {
+        let (mut app, wav) = render_app();
+        let s = &mut app.state;
+        s.pattern = 1;
+        run(s, Cmd::RenderReplace, (0.0, 0.0));
+        let e = s.playlist.edit.as_mut().expect("the name box");
+        assert_eq!((e.target, e.text.as_str()), (crate::playlist::EditTarget::RenderPattern(1, true), "Kick"));
+        e.text = "Kick audio".into();
+        crate::playlist::commit_edit(s);
+        assert_eq!(s.message.as_deref(), Some("Rendered Kick and replaced 1 clip"));
+        let ch = s.project.channels.last().unwrap();
+        assert_eq!(ch.name.as_deref(), Some("Kick audio"));
+        let c = crate::playlist::clips(s)[0];
+        assert_eq!((c.source, c.position, c.length, c.track), (ClipSource::Channel(ch.index), 0, 384, 0));
+        let (w0, w1) = c.window.expect("trimmed to the pattern's part");
+        assert!(w0 == 0.0 && (w1 - 4.0 * 60.0 / s.tempo * 1000.0).abs() < 0.5, "{w1}");
+        // Undo puts the pattern clip back.
+        assert!(crate::playlist::undo(s));
+        assert_eq!(crate::playlist::clips(s)[0].source, ClipSource::Pattern(1));
+        let file = ch_file(s);
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&wav);
+    }
+
+    fn ch_file(s: &State) -> std::path::PathBuf {
+        std::path::PathBuf::from(s.project.channels.last().and_then(|c| c.sample_path.clone()).unwrap_or_default())
     }
 
     #[test]
