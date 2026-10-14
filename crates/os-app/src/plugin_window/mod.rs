@@ -21,6 +21,8 @@ use os_hostlink::PageIcon;
 use os_ui::tabler as tb;
 use os_ui::{Canvas, Color, Font, Rect};
 
+pub mod menu;
+
 #[cfg(windows)]
 mod win32;
 #[cfg(windows)]

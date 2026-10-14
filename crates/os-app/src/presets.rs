@@ -392,11 +392,14 @@ mod tests {
         assert_eq!(app.plugins.sampler_path(0).as_deref(), Some(""), "wrapped to Default");
         assert!(items(&app, 0, true)[0].mark == Mark::Check(true));
         // The window menu's Presets entry lists them.
-        let mut m = crate::playlist::plugin_window_menu(0, false, 0.0, 0.0);
-        fill_window_menu(&app, 0, &mut m);
-        let p = m.items.iter().find(|i| i.label == "Presets" && !i.head).unwrap();
-        assert_eq!(p.children.len(), 2);
-        assert!(m.items.iter().any(|i| i.cmd == Cmd::Preset(PCmd::SaveAs(0))));
+        #[cfg(plugin_windows)]
+        {
+            let mut m = crate::plugin_window::menu::window_menu(0, false, 0.0, 0.0);
+            fill_window_menu(&app, 0, &mut m);
+            let p = m.items.iter().find(|i| i.label == "Presets" && !i.head).unwrap();
+            assert_eq!(p.children.len(), 2);
+            assert!(m.items.iter().any(|i| i.cmd == Cmd::Preset(PCmd::SaveAs(0))));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
