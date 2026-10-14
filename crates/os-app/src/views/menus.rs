@@ -7,7 +7,7 @@
 
 use os_ui::{Font, Rect};
 
-use crate::app::{Action, State, Ui, Win};
+use crate::app::{Action, State, Ui};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -66,6 +66,8 @@ pub struct Menu {
 }
 
 // Flat item indices (columns in order) used by the app; `tests::indices` checks them.
+/// Index of the FILE menu.
+pub const FILE_MENU: usize = 0;
 pub const FILE_NEW: usize = 0;
 pub const FILE_OPEN: usize = 2;
 pub const FILE_SAVE: usize = 4;
@@ -77,6 +79,8 @@ pub const FILE_EXIT: usize = 16;
 /// OPTIONS > Theme settings (flat index: header counts).
 #[cfg(test)]
 pub const OPT_THEME: usize = 5;
+/// OPTIONS > Typing keyboard to piano (spec: ui/typing-keyboard.md).
+pub const TYPING_LABEL: &str = "Typing keyboard to piano";
 /// OPTIONS > Metronome (spec: ui/metronome.md §1).
 pub const METRONOME_LABEL: &str = "Metronome";
 /// OPTIONS > Auto scrolling (spec: ui/auto-scrolling.md §1).
@@ -227,7 +231,7 @@ const OPTIONS: &[Item] = &[
     it("Enable MIDI output", "").tick(),
     it("Enable MIDI master sync", "").tick(),
     head("Switches"),
-    it("Typing keyboard to piano", "Ctrl+T").on().tick(),
+    it(TYPING_LABEL, "Ctrl+T").on().tick(),
     it(METRONOME_LABEL, "Ctrl+M").on().tick(),
     it("Recording precount", "Ctrl+P").tick(),
     it("Start on input", "Ctrl+I").tick(),
@@ -330,35 +334,15 @@ pub fn bar_layout(c: &mut os_ui::Canvas) -> [(f32, f32, f32); 8] {
     out
 }
 
-/// VIEW's window entries toggle their window.
-fn win_of(label: &str) -> Option<Win> {
-    Some(match label {
-        "Playlist" => Win::Playlist,
-        "Piano roll" => Win::PianoRoll,
-        "Channel rack" => Win::ChannelRack,
-        "Mixer" => Win::Mixer,
-        "Browser" => Win::Browser,
-        "Plugin performance monitor" => Win::Perf,
-        // spec: ui/tempo-tapper.md §1
-        "Tempo tapper" => Win::Tapper,
-        _ => return None,
-    })
-}
-
-/// Whether an entry does something in this build: its static flag, or one of the label-dispatched commands
-/// `App::menu_item` handles (settings tabs, pattern commands, window toggles, plugin picker, undo).
+/// Whether an entry does something in this build: its static flag, or an area of `menu_registry` handles it (settings
+/// tabs, pattern commands, window toggles, plugin picker, undo, ...). A new working entry registers there, not here.
 pub fn works(menu: usize, item: &Item) -> bool {
-    item.works
-        || ((menu == OPTIONS_MENU || menu == ADD_MENU) && crate::views::settings::tab_for_menu(item.label).is_some())
-        || (menu == PATTERNS && crate::patterns::Cmd::from_label(item.label).is_some())
-        || (menu == VIEW && (win_of(item.label).is_some() || item.label == "Plugin picker"))
-        || (menu == EDIT_MENU && item.label == "Undo")
-        || crate::params::menu_handles(item.label)
+    item.works || crate::menu_registry::handles(menu, item.label)
 }
 
 fn item_action(menu: usize, i: usize, item: &Item) -> Action {
     if menu == VIEW {
-        if let Some(w) = win_of(item.label) {
+        if let Some(w) = crate::menu_view::win_of(item.label) {
             return Action::ToggleWin(w);
         }
     }
@@ -371,8 +355,8 @@ fn mark_of(s: &State, menu: usize, item: &Item) -> Mark {
     match (item.mark, menu == VIEW) {
         // The browser is a panel of its own, shown by its own switch.
         (Mark::Check(_), true) if item.label == "Browser" => Mark::Check(s.show_browser),
-        (Mark::Check(_), true) => Mark::Check(win_of(item.label).is_some_and(|w| s.shown(w))),
-        (Mark::Check(_), _) if item.label == "Typing keyboard to piano" => Mark::Check(s.toggles.contains(&"typing")),
+        (Mark::Check(_), true) => Mark::Check(crate::menu_view::win_of(item.label).is_some_and(|w| s.shown(w))),
+        (Mark::Check(_), _) if item.label == TYPING_LABEL => Mark::Check(s.toggles.contains(&"typing")),
         (Mark::Check(_), _) if item.label == METRONOME_LABEL => Mark::Check(crate::metronome::on()),
         (Mark::Check(_), _) if item.label == AUTOSCROLL_LABEL => Mark::Check(crate::autoscroll::on()),
         (Mark::Check(_), _) if item.label == GROUPS_LABEL => Mark::Check(crate::enable_groups::on()),
@@ -592,6 +576,7 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Win;
 
     #[test]
     fn indices() {

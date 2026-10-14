@@ -63,6 +63,19 @@ impl Cmd {
     }
 }
 
+/// Main-menu entries handled here (`menu_registry` area): the PATTERNS commands and ADD > Pattern (find first empty).
+pub fn menu_handles(menu: usize, label: &str) -> bool {
+    use crate::views::menus::{ADD_MENU, PATTERNS, TOOLS_MENU};
+    (menu == PATTERNS && Cmd::from_label(label).is_some()) || ((menu == ADD_MENU || menu == TOOLS_MENU) && label == "Pattern")
+}
+
+/// Run a main-menu entry of `menu_handles`, at the pattern box under the mouse.
+pub fn menu_run(app: &mut crate::app::App, menu: usize, label: &str) -> Option<String> {
+    let cmd = if menu == crate::views::menus::PATTERNS { Cmd::from_label(label)? } else { Cmd::FindFirst };
+    let at = box_at_mouse(app.mouse);
+    run(&mut app.state, cmd, at)
+}
+
 /// Clicks inside the name box, its popups and the confirm dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hit {

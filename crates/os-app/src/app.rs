@@ -2,6 +2,13 @@
 //!
 //! Painting is immediate: every frame repaints from `State` and records hit regions. Hover uses
 //! the topmost hit from the previous frame, so occluded controls never highlight.
+//!
+//! Where new things go (so that features of different areas do not edit the same lines here):
+//! - A new clickable thing is a variant of its area's own enum under one `Action` variant (as `Action::Settings(SAct)`,
+//!   `Action::Tapper(TapAct)`, `Action::Perf(PerfAct)` are), handled in the area's module, not a new top-level variant.
+//! - A new main-menu entry registers in its area module's `menu_handles` / `menu_run` (`menu_registry.rs` lists the
+//!   areas; `views::menus::works` follows it): `menu_item` below stays as it is.
+//! - A new shortcut goes in its area's `key` (`menu_registry::KEYS`), not in `App::key`'s table.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -110,6 +117,7 @@ pub enum Cursor {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    // New clickable things: a variant of an area enum (`Settings(SAct)`, `Tapper(TapAct)`), see the module comment.
     /// Settings window (spec: ui/settings.md).
     Settings(views::settings::SAct),
     /// A control that is drawn but not functional yet (`Ui::off`): hovering and clicking only say so.
@@ -1175,7 +1183,7 @@ impl App {
         }
     }
 
-    fn save(&mut self, choose: bool) {
+    pub(crate) fn save(&mut self, choose: bool) {
         let s = &self.state;
         let target = if choose || s.path.is_none() {
             crate::dialog::save_file(rfd::FileDialog::new().add_filter("FLP project", &["flp"]))
@@ -1191,7 +1199,7 @@ impl App {
     /// mode, one pass of the current pattern in PAT mode) with every hosted instrument and effect to a 32-bit float WAV
     /// file, at the output device's rate. Playback stops; a progress panel shows until the file is written.
     // spec: audio/export.md
-    fn export_wav(&mut self) {
+    pub(crate) fn export_wav(&mut self) {
         if self.export.is_some() {
             return;
         }
@@ -1320,7 +1328,7 @@ impl App {
     }
 
     /// The project as it is now counts as saved (opened, saved, new).
-    fn mark_saved(&mut self) {
+    pub(crate) fn mark_saved(&mut self) {
         self.saved = (self.state.project.clone(), self.state.tempo);
     }
 
@@ -1356,7 +1364,7 @@ impl App {
 
     /// FILE > Save new version (Ctrl+N): saves next to the project as "name_2.flp", "name_3.flp", ... (the first free
     /// number), which becomes the project's file. A project without a file asks for a name.
-    fn save_new_version(&mut self) {
+    pub(crate) fn save_new_version(&mut self) {
         let Some(path) = self.state.path.clone() else { return self.save(true) };
         let stem = path.file_stem().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let (base, n) = match stem.rsplit_once('_') {
@@ -4420,6 +4428,10 @@ impl App {
         if s.shown(Win::PianoRoll) && s.menu_open.is_none() && !s.settings.open && s.playlist.edit.is_none() && crate::piano_tools::key(self, key, ctrl, alt) {
             return;
         }
+        // The areas' own shortcuts (`menu_registry::KEYS`): new shortcuts go there, not into the table below.
+        if crate::menu_registry::key(self, key, crate::menu_registry::Mods { ctrl, alt, shift: self.shift }) {
+            return;
+        }
         match key {
             Key::Named(NamedKey::Space) => self.act(if self.transport.playing() { Action::Stop } else { Action::Play }),
             // spec: ui/tempo-tapper.md §1
@@ -5458,121 +5470,18 @@ impl App {
         }
     }
 
+    /// A main-menu entry was chosen: the area of `menu_registry` that handles it runs it; the others only say they are
+    /// not available yet (spec: ui/menus.md).
     pub(crate) fn menu_item(&mut self, menu: usize, item: usize) {
         use views::menus::*;
-        match (menu, item) {
-            (0, FILE_NEW) => {
-                if !self.confirm_discard("starting a new project") {
-                    return;
-                }
-                self.transport.stop();
-                self.reset_hosted();
-                let s = &mut self.state;
-                s.project = default_project();
-                s.file = None;
-                s.path = None;
-                s.tempo = 130.0;
-                s.pattern = 1;
-                s.piano.reset();
-                s.playlist.reset();
-                crate::playlist::load_view(s);
-                s.rack.reset();
-                crate::rack::from_model(s);
-                s.piano.dirty = true;
-                s.message = Some("New project".into());
-                self.mark_saved();
-            }
-            // Theme import (spec: ui/flstheme.md): pick a .flstheme, starting in FL's theme folder when installed.
-            (OPTIONS_MENU | ADD_MENU, i) if item_at(menu, i).and_then(|it| views::settings::tab_for_menu(it.label)).is_some() => {
-                let tab = item_at(menu, i).and_then(|it| views::settings::tab_for_menu(it.label)).expect("checked");
-                self.open_settings(tab);
-            }
-            (0, FILE_OPEN) => {
-                if !self.confirm_discard("opening another project") {
-                    return;
-                }
-                let start = self.state.path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                let mut dlg = rfd::FileDialog::new().add_filter("FLP project", &["flp"]);
-                if let Some(d) = start {
-                    dlg = dlg.set_directory(d);
-                }
-                if let Some(p) = crate::dialog::pick_file(dlg) {
-                    self.open(p);
-                }
-            }
-            (0, FILE_SAVE) => self.save(false),
-            (0, FILE_EXPORT) => self.export_wav(),
-            // ADD > Sampler: a new Lemon Sampler channel at the bottom of the rack (spec: ui/plugin-menu.md §1).
-            (ADD_MENU, i) if item_at(ADD_MENU, i).is_some_and(|it| it.label == "Sampler") => {
-                if let Some(index) = self.plugins.index_of(crate::plugins::LEMON_SAMPLER) {
-                    self.state.message = crate::plugin_menu::add_generator(self, index, None);
-                }
-            }
-            (ADD_MENU, i) if item_at(ADD_MENU, i).is_some_and(|it| it.label == "More plugins...") => {
-                let at = self.mouse;
-                self.open_plugin_menu(crate::plugin_menu::Target::Gen(None), at);
-            }
-            (ADD_MENU, i) if item_at(ADD_MENU, i).is_some_and(|it| it.label == "Refresh plugin list (fast scan)") => self.start_scan(crate::plugin_db::Mode::Changed),
-            (HELP_MENU, HELP_ABOUT) => {
-                self.state.message = Some(concat!("Lemon Studio ", env!("CARGO_PKG_VERSION"), " (pre-alpha), free software under the GNU GPL v3 or later").into());
-            }
-            (ADD_MENU | TOOLS_MENU, i) if item_at(menu, i).is_some_and(|it| it.label == "Pattern") => {
-                let at = crate::patterns::box_at_mouse(self.mouse);
-                if let Some(m) = crate::patterns::run(&mut self.state, crate::patterns::Cmd::FindFirst, at) {
-                    self.state.message = Some(m);
-                }
-            }
-            (TOOLS_MENU, i) if item_at(TOOLS_MENU, i).is_some_and(|it| it.label == "Stop sound") => {
-                self.transport.stop();
-                self.state.message = Some("Sound stopped".into());
-            }
-            // spec: ui/unused-channels.md
-            (TOOLS_MENU, i) if item_at(TOOLS_MENU, i).is_some_and(|it| it.label == "Select unused channels") => {
-                self.state.message = crate::rack::run(self, crate::rack::RCmd::SelectUnused);
-            }
-            (TOOLS_MENU, i) if item_at(TOOLS_MENU, i).is_some_and(|it| it.label == "Purge unused audio clips") => {
-                self.state.message = crate::rack::run(self, crate::rack::RCmd::Purge);
-            }
-            (TOOLS_MENU, i) if item_at(TOOLS_MENU, i).is_some_and(|it| it.label == "Reset empty playlist tracks") => {
-                if let Some(m) = crate::playlist::run(self, crate::playlist::Cmd::ResetEmptyTracks) {
-                    self.state.message = Some(m);
-                }
-            }
-            (0, FILE_SAVE_AS) => self.save(true),
-            (0, FILE_SAVE_VERSION) => self.save_new_version(),
-            (0, FILE_EXIT) => self.want_close = true,
-            (VIEW | ADD_MENU, i) if item_at(menu, i).is_some_and(|it| it.label == "Plugin picker") => {
-                let at = self.mouse;
-                self.open_plugin_menu(crate::plugin_menu::Target::All, at);
-            }
-            (PATTERNS, i) if i >= PATTERN_PICK => self.state.pattern = (i - PATTERN_PICK) as u16,
-            (PATTERNS, i) if item_at(PATTERNS, i).and_then(|it| crate::patterns::Cmd::from_label(it.label)).is_some() => {
-                let cmd = item_at(PATTERNS, i).and_then(|it| crate::patterns::Cmd::from_label(it.label)).expect("checked");
-                let at = crate::patterns::box_at_mouse(self.mouse);
-                if let Some(m) = crate::patterns::run(&mut self.state, cmd, at) {
-                    self.state.message = Some(m);
-                }
-            }
-            (VIEW, i) if item_at(VIEW, i).and_then(|it| CloseAll::from_label(it.label)).is_some() => {
-                let what = item_at(VIEW, i).and_then(|it| CloseAll::from_label(it.label)).expect("checked");
-                self.close_windows(what);
-            }
-            (m, i) if item_at(m, i).is_some_and(|it| it.label == TYPING_LABEL) => self.toggle_typing(),
-            (m, i) if item_at(m, i).is_some_and(|it| it.label == views::menus::METRONOME_LABEL) => self.toggle_metronome(),
-            (m, i) if item_at(m, i).is_some_and(|it| it.label == views::menus::AUTOSCROLL_LABEL) => self.toggle_autoscroll(),
-            (m, i) if item_at(m, i).is_some_and(|it| it.label == views::menus::GROUPS_LABEL) => self.toggle_groups(),
-            (m, i) if item_at(m, i).is_some_and(|it| crate::params::menu_handles(it.label)) => {
-                let label = item_at(m, i).map_or("", |it| it.label);
-                if let Some(msg) = self.params_menu(label) {
-                    self.state.message = Some(msg);
-                }
-            }
-            // EDIT > Undo = Ctrl+Z (piano-roll undo).
-            (EDIT_MENU, i) if item_at(EDIT_MENU, i).is_some_and(|it| it.label == "Undo") => self.act(Action::PianoUndo),
-            (m, i) => {
-                let label = item_at(m, i).map_or("item", |it| it.label);
-                self.state.message = Some(format!("{label}: not available yet"));
-            }
+        // The pattern list column selects pattern `n` (its rows have no label of their own).
+        if menu == PATTERNS && item >= PATTERN_PICK {
+            self.state.pattern = (item - PATTERN_PICK) as u16;
+            return;
+        }
+        let label = item_at(menu, item).map_or("item", |it| it.label);
+        if !crate::menu_registry::run(self, menu, label) {
+            self.state.message = Some(format!("{label}: not available yet"));
         }
     }
 }
@@ -5597,7 +5506,6 @@ fn pattern_shortcut(key: &winit::keyboard::Key, ctrl: bool, shift: bool) -> Opti
 
 /// Typing keyboard velocity (fixed, spec: ui/typing-keyboard.md).
 const TYPING_VELOCITY: u8 = 100;
-const TYPING_LABEL: &str = "Typing keyboard to piano";
 
 /// Semitone above the lower tier's first C (C4) for a physical key (spec: ui/typing-keyboard.md).
 fn typing_semitone(code: KeyCode) -> Option<i32> {
