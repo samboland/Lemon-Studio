@@ -223,6 +223,8 @@ pub enum Action {
     /// Piano-roll time ruler: left-drag moves the play-start marker, right-drag selects a time
     /// range (spec: ui/piano-roll.md §10).
     PianoRuler,
+    /// The piano roll's menus, helpers, time markers and Note properties dialog (`piano_menu`).
+    PianoRoll(crate::piano_menu::PrAct),
     /// A scroll bar (left-drag scrolls; right-drag scrolls horizontally and zooms vertically).
     Scrollbar(Scroll),
     /// A scroll bar's arrow button: steps the axis by an eighth of its view (-1 back, 1 forward).
@@ -693,6 +695,8 @@ pub enum Drag {
     Knob { id: crate::knobs::KnobId, y0: f32, v0: f32 },
     /// Left button held on the piano keyboard: each key entered is auditioned (§8).
     PianoKeys { key: i32 },
+    /// The piano roll's other drags (`piano_mouse::PDrag`).
+    Piano(crate::piano_mouse::PDrag),
     /// Scroll axes from a start mouse position: value = start + (mouse - m0) × ratio per axis
     /// (ratio < 0 grabs the content, as with the middle button).
     Scroll { m0: (f32, f32), axes: Vec<(Scroll, bool, f32, f32)> },
@@ -2967,7 +2971,8 @@ impl App {
                 | Drag::Scrub { .. }
                 | Drag::Velocity { .. }
                 | Drag::ControlErase { .. }
-                | Drag::PianoKeys { .. }) => self.piano_drag_move(d, x, y),
+                | Drag::PianoKeys { .. }
+                | Drag::Piano(_)) => self.piano_drag_move(d, x, y),
                 Drag::Window { win, dx, dy } => {
                     let old = self.win_bounds(win);
                     let pos = ((x - dx).max(0.0), (y - dy).max(views::WORK_Y));
@@ -3501,6 +3506,14 @@ impl App {
             self.erase_control_points(x, x);
             return;
         }
+        if action == Some(Action::PianoVelocity) {
+            return self.piano_lane_right();
+        }
+        if let Some(Action::PianoRoll(a)) = action {
+            if self.piano_roll_right(a) {
+                return;
+            }
+        }
         if let Some(a @ (Action::PianoNote(_) | Action::PianoGrid)) = action {
             // Select: same as the left button; Zoom: toggle zoomed out / last zoom; the other
             // tools delete while the right button is held (spec: ui/piano-roll.md §9).
@@ -3550,10 +3563,14 @@ impl App {
             }
             return self.invalidate();
         }
+        if let Some(Drag::Piano(p)) = self.drag.clone() {
+            self.drag = None;
+            return self.piano_pdrag_up(p);
+        }
         let had_overlay = self.state.piano.overlay.take().is_some();
         match self.drag.clone() {
             Some(Drag::Slice) => {
-                if let Some(g) = self.piano_geom() {
+                if let Some(g) = self.piano_snap_geom() {
                     let t = g.snap_down(g.tick_at(self.mouse.0) + g.step as f32 / 2.0);
                     if piano::slice(&mut self.state, t) > 0 {
                         self.state.piano.dirty = true;
@@ -4224,6 +4241,9 @@ impl App {
             self.piano_click(&a);
             return;
         }
+        if let Action::PianoRoll(p) = a {
+            return self.piano_roll_act(p);
+        }
         if a == Action::PianoRuler {
             if let Some(g) = self.piano_geom() {
                 self.state.piano.marker = g.snap_down(g.tick_at(self.mouse.0) + g.step as f32 / 2.0);
@@ -4233,7 +4253,7 @@ impl App {
         }
         let s = &mut self.state;
         match a {
-            Action::PianoGrid | Action::PianoNote(_) | Action::PianoVelocity | Action::PianoKeys | Action::PianoRuler | Action::PianoSplitter | Action::Scrollbar(_) | Action::ScrollStep(..) => {}
+            Action::PianoGrid | Action::PianoNote(_) | Action::PianoVelocity | Action::PianoKeys | Action::PianoRuler | Action::PianoSplitter | Action::PianoRoll(_) | Action::Scrollbar(_) | Action::ScrollStep(..) => {}
             Action::PianoTool(t) => {
                 s.piano.tool = t;
                 s.piano.overlay = None;

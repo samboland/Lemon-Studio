@@ -83,6 +83,7 @@ pub const KEYS: &[fn(&mut App, &Key, Mods) -> bool] = &[
     crate::menu_options::key,
     crate::menu_tools::key,
     crate::menu_help::key,
+    crate::piano_menu::key,
 ];
 
 /// Offer `key` to the areas' shortcuts; returns whether one took it.
