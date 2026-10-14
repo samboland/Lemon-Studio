@@ -43,6 +43,7 @@ mod piano_mouse;
 mod piano_split;
 mod piano_tools;
 mod rack;
+mod rack_menu;
 mod patterns;
 mod perf;
 mod playlist;

@@ -263,6 +263,8 @@ pub enum Action {
     RackGraphArea,
     RackGraphTab(usize),
     RackFill(crate::rack::FillHit),
+    /// Channel rack controls handled in `rack.rs` (layer window, preview mute buttons, Note tab octaves).
+    Rack(crate::rack::RAct),
     /// Pattern name box, suggestions, swatches, delete confirmation (spec: ui/pattern-menu.md).
     Pat(crate::patterns::Hit),
 }
@@ -4415,7 +4417,8 @@ impl App {
             | Action::RackLoopBox(_)
             | Action::RackGraphArea
             | Action::RackGraphTab(_)
-            | Action::RackFill(_) => {}
+            | Action::RackFill(_)
+            | Action::Rack(_) => {}
             Action::WinDrag(win) => {
                 // Double-click on the title bar toggles maximized / floating (like the max button).
                 let now = std::time::Instant::now();
