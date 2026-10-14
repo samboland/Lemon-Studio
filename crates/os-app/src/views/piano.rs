@@ -45,24 +45,29 @@ pub struct Layout {
     pub panel: Rect,
 }
 
-/// `split`: how the height under the ruler is shared by the grid and the event panel (spec:
-/// ui/event-panel-splitter.md; the default puts the splitter at bottom − 185, §1).
-pub fn layout(r: Rect, split: crate::piano_split::Split) -> Layout {
+/// `split`: how the height under the ruler is shared by the grid and the event panel.
+/// The default split follows the available height, as in native FL window resizes.
+pub fn layout(r: Rect, split: crate::piano_split::Split, classic_float: bool, scale: f32) -> Layout {
     use crate::piano_split::BAND;
     let bottom = r.bottom();
-    let gx = r.x + 73.0;
-    let gr = r.right() - 23.0;
+    let pixel = 1.0 / scale;
+    let key_x = r.x - if classic_float { 1.0 } else { 0.0 };
+    let key_w = if classic_float { (65.0 * scale).floor() / scale } else { 71.0 };
+    let gx = if classic_float { key_x + key_w } else { r.x + 73.0 };
+    let scroll_w = if classic_float { (21.0 * scale).floor() / scale } else { 22.0 };
+    let gr = if classic_float { r.right() + 1.0 - scroll_w } else { r.right() - 23.0 };
+    let ox = if classic_float { gx - pixel } else { r.x + 72.0 };
     let gy = r.y + 64.0;
     let split = gy + split.grid_h(bottom - gy - BAND);
     Layout {
-        tab: Rect::new(r.x, r.y + 23.0, 71.0, 41.0),
-        overview: Rect::new(r.x + 72.0, r.y + 23.0, gr - r.x - 72.0 + 2.0, 22.0),
-        ruler: Rect::new(r.x + 72.0, r.y + 45.0, gr - r.x - 72.0 + 2.0, 19.0),
-        keys: Rect::new(r.x, gy, 71.0, split - gy),
+        tab: Rect::new(key_x, r.y + 23.0, key_w, 41.0),
+        overview: Rect::new(ox, r.y + 23.0, gr - ox + if classic_float { pixel } else { 2.0 }, 22.0),
+        ruler: Rect::new(ox, r.y + 45.0, gr - ox + if classic_float { pixel } else { 2.0 }, 19.0),
+        keys: Rect::new(key_x, gy, key_w, split - gy),
         grid: Rect::new(gx, gy, gr - gx, split - gy),
-        vscroll: Rect::new(gr + 1.0, r.y + 23.0, r.right() - gr - 1.0, split - r.y - 23.0),
+        vscroll: Rect::new(gr + if classic_float { 0.0 } else { 1.0 }, r.y + 23.0, scroll_w, split - r.y - 23.0),
         splitter: Rect::new(r.x, split, r.w, BAND),
-        label: Rect::new(r.x, split + BAND, 71.0, bottom - split - BAND),
+        label: Rect::new(key_x, split + BAND, key_w, bottom - split - BAND),
         panel: Rect::new(gx, split + BAND, gr - gx, bottom - split - BAND),
     }
 }
@@ -88,7 +93,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     if r.h < 2.0 * crate::app::TITLE_H {
         return; // collapsed to the title bar
     }
-    let l = layout(r, s.piano.split);
+    let l = layout(r, s.piano.split, floating && !super::lemon(ui), ui.c.scale);
     let g = Geom::new(s, l.grid);
     let ch = channel.map(|c| c.index);
     let pat = s.project.patterns.iter().find(|p| p.number == s.pattern);
@@ -225,14 +230,23 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let down = Rect::new(l.vscroll.x, l.grid.bottom() - 19.0, l.vscroll.w, 19.0);
     arrow_button(ui, up, 2, Scroll::PianoY);
     arrow_button(ui, down, 3, Scroll::PianoY);
-    let track = Rect::new(l.vscroll.x + 1.0, up.bottom(), l.vscroll.w - 2.0, (down.y - up.bottom()).max(0.0));
+    let inset = if lemon { 1.0 } else { 1.0 / ui.c.scale };
+    let track = Rect::new(l.vscroll.x + inset, up.bottom(), l.vscroll.w - 2.0 * inset, (down.y - up.bottom()).max(0.0));
     super::scrollbar(ui, track, true, s.piano.scroll_y, l.grid.h, (TOP_KEY + 1) as f32 * g.row, Scroll::PianoY);
 
     velocity_panel(ui, s, &l, &g, notes, ch, &sel);
-    if s.lane_menu {
-        lane_menu(ui, s, &l);
-    }
     resize_zones(ui, s, Win::PianoRoll, outer);
+}
+
+/// Paint the Control popup above child windows, outside their clipping bounds.
+pub fn paint_overlay(ui: &mut Ui, s: &State) {
+    let r = s.win_rect(Win::PianoRoll);
+    let ws = s.wins[Win::PianoRoll.slot().unwrap()];
+    if ws.mini || r.h < 2.0 * crate::app::TITLE_H { return; }
+    let floating = !ws.maxed;
+    let (inner, _) = super::frame_rects(s, Win::PianoRoll, r);
+    let l = layout(inner, s.piano.split, floating && !super::lemon(ui), ui.c.scale);
+    lane_menu(ui, s, &l);
 }
 
 /// Scroll arrow button (§1a): raised face with a 1 px dark rim and a chevron pointing `dir`
@@ -287,7 +301,11 @@ fn toolbar(ui: &mut Ui, r: Rect, shift: f32, active: Tool) {
         let b = Rect::new(ox + x - 9.0, r.y + 2.0, 18.0, 18.0);
         let Some(action) = action else {
             ui.off(b, hint);
-            icons::draw(ui.c, icon, b, t.text_faint);
+            if icon == Icon::ArrowRight {
+                os_ui::kit::triangle(ui.c, b.cx(), b.cy(), 4.0, os_ui::kit::Dir::Down, t.text_faint);
+            } else {
+                icons::draw(ui.c, icon, b, t.text_faint);
+            }
             continue;
         };
         let on = action == Action::PianoTool(active);
@@ -386,19 +404,29 @@ fn ruler(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>, marker: u
     ui.c.pop_clip();
 }
 
+fn key_gradient(c: &mut os_ui::Canvas, r: Rect, left: Color, right: Color) {
+    let scale = c.scale;
+    let start = (r.x * scale).round() as i32;
+    let end = (r.right() * scale).round() as i32;
+    let span = (end - start - 1).max(1) as f32;
+    for x in start..end {
+        let color = left.mix(right, (x - start) as f32 / span);
+        c.fill_cell(Rect::new(x as f32 / scale, r.y, 1.0 / scale, r.h), color);
+    }
+}
+
 fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
     let t = ui.t;
     let k = l.keys;
     ui.hit(k, Action::PianoKeys, "Keyboard");
     ui.c.push_clip(k);
-    // White keys: a stepped horizontal gradient (§4), with a dark right edge. Lemon: flat keys.
+    // FL shades keys smoothly across their width. Lemon uses flat keys.
     let lemon = super::lemon(ui);
-    let bands = if lemon { 1 } else { 6 };
-    for i in 0..bands {
-        let x = k.x + (k.w - 1.0) * i as f32 / bands as f32;
-        let w = (k.w - 1.0) / bands as f32 + 1.0;
-        let c = if lemon { t.key_white } else { t.key_white_left.mix(t.key_white, i as f32 / (bands - 1) as f32) };
-        ui.c.fill_rect(Rect::new(x, k.y, w, k.h), c);
+    let white = Rect::new(k.x, k.y, k.w - 1.0, k.h);
+    if lemon {
+        ui.c.fill_rect(white, t.key_white);
+    } else {
+        key_gradient(ui.c, white, t.key_white_left, t.key_white);
     }
     ui.c.fill_rect(Rect::new(k.right() - 1.0, k.y, 1.0, k.h), ui.t.s(0x7e8289));
     let (lo, hi) = g.visible_keys();
@@ -408,11 +436,11 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
         let y = g.y_of(key);
         let top = if is_black(key + 1) { y - half } else { y };
         let bottom = if is_black(key - 1) { y + row - 1.0 + half } else { y + row - 1.0 };
-        for i in 0..bands {
-            let x = k.x + (k.w - 1.0) * i as f32 / bands as f32;
-            let w = (k.w - 1.0) / bands as f32 + 1.0;
-            let c = if lemon { t.key_lit } else { t.key_lit_left.mix(t.key_lit, i as f32 / (bands - 1) as f32) };
-            ui.c.fill_rect(Rect::new(x, top, w, bottom - top), c);
+        let key_rect = Rect::new(k.x, top, k.w - 1.0, bottom - top);
+        if lemon {
+            ui.c.fill_rect(key_rect, t.key_lit);
+        } else {
+            key_gradient(ui.c, key_rect, t.key_lit_left, t.key_lit);
         }
         ui.c.fill_rect(Rect::new(k.right() - 1.0, top, 1.0, bottom - top), t.key_lit_edge);
     }
@@ -447,18 +475,14 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
                 ui.c.fill_rrect(Rect::new(k.x - 6.0, y, 51.0, row), 3.0f32.min(row / 2.0), right);
                 continue;
             }
-            for i in 0..6 {
-                let c = left.mix(right, i as f32 / 5.0);
-                let x = k.x + if i == 0 { 0.0 } else { 10.0 + 8.0 * (i - 1) as f32 };
-                let w = if i == 0 { 10.0 } else if i == 5 { 3.0 } else { 8.0 };
-                ui.c.fill_rect(Rect::new(x, y, w, row), c);
-            }
+            key_gradient(ui.c, Rect::new(k.x, y, 45.0, row), left, right);
         }
     }
     ui.c.pop_clip();
     // Divider between keyboard and grid.
-    ui.c.fill_rect(Rect::new(k.right(), l.grid.y, 1.0, k.h), ui.t.s(0x131718));
-    ui.c.fill_rect(Rect::new(k.right() + 1.0, l.grid.y, 1.0, k.h), ui.t.s(0x000000));
+    let edge = if lemon { 1.0 } else { 1.0 / ui.c.scale };
+    ui.c.fill_rect(Rect::new(k.right(), l.grid.y, edge, k.h), ui.t.s(0x131718));
+    ui.c.fill_rect(Rect::new(k.right() + edge, l.grid.y, edge, k.h), ui.t.s(0x000000));
 }
 
 /// Vertical step / beat / bar lines over `area`, in `line(fill)` colors per horizontal band.
@@ -538,8 +562,10 @@ fn velocity_panel(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], 
     ui.c.fill_rect(l.label, t.window_title);
     let btn = Rect::new(l.label.x, l.label.y, l.label.w, 22.0);
     let hov = ui.hit(btn, Action::PianoLaneMenu, "Event panel: choose which note property to edit");
-    ui.c.text(Font::new(16), l.label.x + 12.0, l.label.y + 2.0, if hov || s.lane_menu { ui.t.tx(0xffffff) } else { t.text }, "Control");
-    ui.c.fill_polygon(&[(l.label.x + 61.0, l.label.y + 9.0), (l.label.x + 65.0, l.label.y + 12.5), (l.label.x + 61.0, l.label.y + 16.0)], t.text_dim);
+    let label_font = if super::lemon(ui) { Font::new(16) } else { Font::system_regular(13) };
+    let padding = if super::lemon(ui) { 12.0 } else if s.wins[2].maxed { 13.0 } else { 6.0 };
+    ui.c.text(label_font, l.label.x + padding, l.label.y + 2.0, if hov || s.lane_menu { ui.t.tx(0xffffff) } else { t.text }, "Control");
+    os_ui::kit::triangle(ui.c, l.label.right() - 5.0, l.label.y + 11.0, 4.0, os_ui::kit::Dir::Down, t.text_dim);
     ui.c.fill_rect(Rect::new(l.panel.x - 2.0, l.panel.y, 1.0, l.panel.h), ui.t.s(0x131718));
     ui.c.fill_rect(Rect::new(l.panel.x - 1.0, l.panel.y, 1.0, l.panel.h), ui.t.s(0x000205));
 
@@ -655,35 +681,42 @@ fn control_bars(ui: &mut Ui, s: &State, g: &Geom, p: Rect, lane: Lane, ch: Optio
 
 /// The event panel's Control menu (spec: ui/piano-roll.md §7a): same look as the menu bar dropdowns.
 fn lane_menu(ui: &mut Ui, s: &State, l: &Layout) {
-    let t = ui.t;
-    const ROW: f32 = 19.0;
-    const HEAD: f32 = 16.0;
-    let (w0, w1) = (170.0, 124.0);
-    let h = HEAD + 7.0 * ROW;
-    let win_h = ui.c.size().1;
-    let r = Rect::new(l.label.x + 9.0, (l.label.y + 24.0).min(win_h - h - 8.0), w0 + w1 + 6.0, h + 4.0);
-    ui.c.fill_rect(r, t.menu_pop);
-    ui.c.stroke_rrect(r.inset(1.0), 0.0, 2.0, t.menu_pop_border);
+    let colors = super::context_palette(ui.t);
+    let t = &colors;
+    let lemon = super::lemon(ui);
+    let m = os_ui::kit::menu::metrics(ui.c.scale);
+    let (row, header, border, divider) = if lemon { (19.0, 16.0, 2.0, 2.0) } else { (m.row, m.head, m.border, m.line) };
+    let (w0, w1) = if lemon { (170.0, 124.0) } else { (164.0, 116.0) };
+    let h = header + 7.0 * row;
+    let (win_w, win_h) = ui.c.size();
+    let (dx, dy) = if lemon { (9.0, 24.0) } else { (11.0, 20.0) };
+    let width = w0 + w1 + divider + 2.0 * border;
+    let r = Rect::new((l.label.x + dx).min(win_w - width - 4.0).max(0.0), (l.label.y + dy).min(win_h - h - 2.0 * border - 4.0).max(0.0), width, h + 2.0 * border);
+    ui.c.fill_rect(r, t.menu_pop_border);
+    ui.c.fill_rect(r.inset(border), t.menu_pop);
     ui.hit(r, Action::Swallow, "");
-    let body = r.inset(2.0);
-    let font = Font::new(14);
+    let body = r.inset(border);
+    let font = if lemon { Font::new(14) } else { Font::system_regular(11) };
     let head = |ui: &mut Ui, x: f32, w: f32, text: &str| {
-        ui.c.fill_rect(Rect::new(x, body.y, w, HEAD), t.menu_pop_head);
-        ui.c.text(Font::new(12), x + 4.0, body.y + 1.0, t.menu_pop_head_text, text);
+        ui.c.fill_rect(Rect::new(x, body.y, w, header), t.menu_pop_head);
+        ui.c.text(if lemon { Font::new(12) } else { Font::system_regular(10) }, x + 4.0, body.y + 1.0, t.menu_pop_head_text, text);
     };
     head(ui, body.x, w0, "Note properties");
-    head(ui, body.x + w0 + 2.0, w1, "Channel controls");
-    ui.c.fill_rect(Rect::new(body.x + w0, body.y, 2.0, body.h), t.menu_pop_border);
+    head(ui, body.x + w0 + divider, w1, "Channel controls");
+    ui.c.fill_rect(Rect::new(body.x + w0, body.y, divider, body.h), t.menu_pop_border);
     for (i, lane) in Lane::ALL.iter().enumerate() {
         // Note properties fill the left column, channel controls the right one.
         let rr = if i < Lane::NOTE_LANES {
-            Rect::new(body.x, body.y + HEAD + i as f32 * ROW, w0, ROW)
+            Rect::new(body.x, body.y + header + i as f32 * row, w0, row)
         } else {
-            Rect::new(body.x + w0 + 2.0, body.y + HEAD + (i - Lane::NOTE_LANES) as f32 * ROW, w1, ROW)
+            Rect::new(body.x + w0 + divider, body.y + header + (i - Lane::NOTE_LANES) as f32 * row, w1, row)
         };
-        if ui.hit(rr, Action::PianoLanePick(i), lane.menu_name()) || *lane == s.piano.lane {
-            ui.c.fill_rect(rr, t.menu_pop_hi);
+        let selected = *lane == s.piano.lane;
+        let hovered = ui.hit(rr, Action::PianoLanePick(i), lane.menu_name());
+        if hovered || selected {
+            ui.c.fill_rect(rr, if !lemon && selected { Color::rgb(0x333335) } else { t.menu_pop_hi });
         }
-        ui.c.text(font, rr.x + 20.0, rr.y + 2.0, t.menu_pop_text, lane.menu_name());
+        let ink = if !lemon && (selected || hovered) { ui.t.text } else { t.menu_pop_text };
+        ui.c.text(font, rr.x + if lemon { 20.0 } else { 16.0 }, rr.y + 2.0 + (row - 19.0) / 2.0, ink, lane.menu_name());
     }
 }

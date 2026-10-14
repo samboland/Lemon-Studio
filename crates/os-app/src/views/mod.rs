@@ -111,6 +111,11 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     }
     ui.part(Seg::Toolbar, Rect::new(0.0, 0.0, w, WORK_Y), |ui| toolbar::paint(ui, s, f, w));
     let overlays = ui.hit_count();
+    if s.lane_menu && s.z.contains(&Win::PianoRoll) {
+        ui.win = Some(Win::PianoRoll);
+        piano::paint_overlay(ui, s);
+        ui.win = None;
+    }
     // A menu opened from the settings window (Audio page combos) goes over it.
     if !s.settings.open {
         playlist::paint_overlays(ui, s);
@@ -222,6 +227,22 @@ pub(super) fn title_font(ui: &Ui) -> os_ui::Font {
 
 pub(super) fn title_y(ui: &Ui, r: Rect, flat: bool) -> f32 {
     r.y + if flat && !lemon(ui) { -2.0 } else { 1.0 }
+}
+
+/// Native FL context menus use a neutral panel and regular black system text.
+pub(super) fn context_palette(t: &os_theme::Palette) -> os_theme::Palette {
+    let mut colors = t.clone();
+    if !kit::lemon::on(t) {
+        colors.menu_pop = Color::rgb(0x838385);
+        colors.menu_pop_border = Color::rgb(0x000000);
+        colors.menu_pop_head = Color::rgb(0x606064);
+        colors.menu_pop_head_text = Color::rgb(0xafafb3);
+        colors.menu_pop_text = Color::rgb(0x000000);
+        colors.menu_pop_shortcut = Color::rgb(0x333333);
+        colors.menu_pop_dim = Color::rgb(0x55555a);
+        colors.menu_pop_hi = Color::rgb(0x333335);
+    }
+    colors
 }
 
 /// `window_frame` with `flat`: a flat title bar without the separator (inside a floating frame).

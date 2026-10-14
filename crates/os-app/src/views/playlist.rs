@@ -98,7 +98,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let ty = r.y + 2.0;
     let b = Rect::new(r.x + 13.0 - 9.0, ty, 18.0, 18.0);
     let hov = ui.hit(b, Action::PlOptions, "Playlist options");
-    icons::draw(ui.c, Icon::ArrowRight, b, if hov { t.glyph } else { t.text });
+    os_ui::kit::triangle(ui.c, b.cx(), b.cy(), 4.0, os_ui::kit::Dir::Down, if hov { t.glyph } else { t.text });
     let b = Rect::new(r.x + 33.0 - 9.0, ty, 18.0, 18.0);
     let hov = ui.hit(b, Action::PlSnap, format!("Snap: {}", s.playlist.snap.label()));
     icons::draw(ui.c, Icon::Magnet, b, if hov || s.playlist.snap != pl::Snap::None { t.glyph } else { t.text });
@@ -1155,19 +1155,10 @@ fn any_enabled(items: &[pl::PItem]) -> bool {
 
 /// Draw a popup list at (x, y) kept on screen; returns its rect and each item's row rect.
 fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, sub: bool) -> (Rect, Vec<Rect>) {
-    let settings = !super::lemon(ui) && items.iter().any(|it| matches!(it.cmd, pl::Cmd::Settings(_)));
-    let mut colors = ui.t.clone();
-    if settings {
-        colors.menu_pop = Color::rgb(0x808080);
-        colors.menu_pop_border = Color::rgb(0x000000);
-        colors.menu_pop_head = Color::rgb(0x606064);
-        colors.menu_pop_head_text = Color::rgb(0xafafb3);
-        colors.menu_pop_text = Color::rgb(0x000000);
-        colors.menu_pop_dim = Color::rgb(0x55555a);
-        colors.menu_pop_hi = Color::rgb(0x999999);
-    }
+    let context = !super::lemon(ui) && !items.iter().any(|it| matches!(it.cmd, pl::Cmd::Audio(_) | pl::Cmd::Plugin(_)));
+    let colors = if context { super::context_palette(ui.t) } else { ui.t.clone() };
     let t = &colors;
-    let font = if settings { Font::system(11) } else { Font::new(14) };
+    let font = if context { Font::system_regular(11) } else { Font::new(14) };
     let mut lw: f32 = 80.0;
     let mut kw: f32 = 0.0;
     for it in items {
@@ -1190,8 +1181,8 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
     if lemon {
         os_ui::kit::popup(ui.c, t, r);
     } else {
-        ui.c.fill_rect(r, t.menu_pop);
-        ui.c.stroke_rrect(Rect::new(r.x + m.line, r.y + m.line, r.w - 2.0 * m.line, r.h - 2.0 * m.line), 0.0, m.border, t.menu_pop_border);
+        ui.c.fill_rect(r, t.menu_pop_border);
+        ui.c.fill_rect(r.inset(m.border), t.menu_pop);
     }
     ui.hit(r, Action::Swallow, "");
     for (i, it) in items.iter().enumerate() {
@@ -1214,15 +1205,16 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
             } else {
                 ui.c.fill_rect(rr, t.menu_pop_head);
             }
-            ui.c.text(if settings { Font::system(9) } else { Font::new(12) }, rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, &it.label);
+            ui.c.text(if context { Font::system_regular(10) } else { Font::new(12) }, rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, &it.label);
             continue;
         }
         let action = if sub { Action::PlPopupSub(i) } else { Action::PlPopup(i) };
         // Greyed out: a disabled entry, or a submenu with nothing available in it (it still opens, to show what is
         // planned). Disabled entries never light up.
         let live = it.enabled && (it.children.is_empty() || any_enabled(&it.children));
+        let mut lit = false;
         if it.enabled {
-            let lit = ui.hit(rr, action, it.label.to_string()) || open == Some(i);
+            lit = ui.hit(rr, action, it.label.to_string()) || open == Some(i);
             if lit && lemon {
                 os_ui::kit::row_highlight(ui.c, t, rr);
             } else if lit {
@@ -1234,7 +1226,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
             // Disabled here and now (nothing to merge, the last arrangement), not missing.
             ui.hit(rr, action, it.label.to_string());
         }
-        let color = if live { t.menu_pop_text } else { t.menu_pop_dim };
+        let color = if !live { t.menu_pop_dim } else if lit && context { t.text } else { t.menu_pop_text };
         let (mx, my) = (rr.x + 10.0, rr.y + m.row / 2.0);
         match it.mark {
             Mark::Check(true) => {
@@ -1250,16 +1242,16 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
             Mark::Radio(false) => ui.c.stroke_circle(mx, my, 3.5, 1.0, t.menu_pop_dim),
             _ => {}
         }
-        ui.c.text_clip(font, rr.x + 20.0, rr.y + 2.0 + dy, lw + 4.0, color, &it.label);
+        ui.c.text_clip(font, rr.x + if context { 16.0 } else { 20.0 }, rr.y + 2.0 + dy, lw + 4.0, color, &it.label);
         let right = rr.right() - if it.children.is_empty() { 8.0 } else { 16.0 };
         if !it.key.is_empty() {
-            let sc = if live { t.menu_pop_shortcut } else { t.menu_pop_dim.mix(t.menu_pop, 0.35) };
+            let sc = if lit && live && context { color } else if live { t.menu_pop_shortcut } else { t.menu_pop_dim.mix(t.menu_pop, 0.35) };
             ui.c.text_right(font.italic(), right, rr.y + 3.0 + dy, sc, it.key);
         }
         if !it.children.is_empty() {
             let ax = rr.right() - 11.0;
-            ui.c.line(ax, my - 3.5, ax + 3.5, my, 1.2, t.menu_pop_dim);
-            ui.c.line(ax + 3.5, my, ax, my + 3.5, 1.2, t.menu_pop_dim);
+            ui.c.line(ax, my - 3.5, ax + 3.5, my, 1.2, if lit && context { color } else { t.menu_pop_dim });
+            ui.c.line(ax + 3.5, my, ax, my + 3.5, 1.2, if lit && context { color } else { t.menu_pop_dim });
         }
     }
     (r, rows)

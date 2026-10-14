@@ -7,8 +7,8 @@ pub const BAND: f32 = 8.0;
 /// An open event panel / grid is at least this tall; less than half of it collapses the part.
 pub const PANEL_MIN: f32 = 45.0;
 pub const GRID_MIN: f32 = 46.0;
-/// The default layout's event panel (the measured maximized layout, band at bottom − 185).
-pub const DEFAULT_PANEL: f32 = 177.0;
+/// FL keeps the default split proportional when its window changes size.
+pub const DEFAULT_GRID_SHARE: f32 = 0.8;
 
 /// `f` = the grid's share of the height shared by the grid and the event panel (1 = the panel collapsed, 0 = the grid
 /// collapsed); `spare` = what a double click on a collapsed panel brings back. `None` = the default layout.
@@ -26,7 +26,7 @@ impl Split {
             Some(f) if f >= 1.0 => return h,
             Some(f) if f <= 0.0 => return 0.0,
             Some(f) => (f * h).round(),
-            None => h - DEFAULT_PANEL,
+            None => (h * DEFAULT_GRID_SHARE).round(),
         };
         // The minimums of open parts; when there is not room for both, the panel keeps its own.
         g.max(GRID_MIN).min(h - PANEL_MIN).max(0.0)
@@ -110,7 +110,9 @@ mod tests {
     #[test]
     fn split_rules() {
         let h = 700.0;
-        assert_eq!(Split::default().grid_h(h), h - DEFAULT_PANEL, "the default keeps a 177 px panel");
+        assert_eq!(Split::default().grid_h(h), 560.0);
+        assert_eq!(Split::default().grid_h(236.0), 189.0, "a small window keeps room for notes");
+        assert_eq!(Split::default().grid_h(1238.0), 990.0, "the default split follows a larger window");
         let s = Split::default().dragged(500.0, h);
         assert_eq!(s.grid_h(h), 500.0);
         // The fraction is kept when the window grows; the panel keeps its minimum when it shrinks.
@@ -130,7 +132,7 @@ mod tests {
         assert!(top.toggled().panel_collapsed());
         assert_eq!(top.toggled().toggled().grid_h(h), 0.0);
         // Collapsed by dragging with nothing kept: back to the default.
-        assert_eq!(Split::default().dragged(h, h).toggled().grid_h(h), h - DEFAULT_PANEL);
+        assert_eq!(Split::default().dragged(h, h).toggled().grid_h(h), (h * DEFAULT_GRID_SHARE).round());
         // Saved and read back.
         assert_eq!(parse(&text(c)), c);
         assert_eq!(parse("split=2\nspare=x\nother=1"), Split::default());

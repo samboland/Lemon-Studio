@@ -202,7 +202,7 @@ fn title_tools(ui: &mut Ui, s: &State, r: Rect) {
     let y = r.y + 11.5;
     let ob = Rect::new(r.x + 3.0, y - 9.0, 16.0, 18.0);
     let hov = ui.hit(ob, Action::Mix(MHit::Options), "Mixer options");
-    chevron(ui, r.x + 11.0, y, true, if hov { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
+    os_ui::kit::triangle(ui.c, r.x + 11.0, y, 4.0, os_ui::kit::Dir::Down, if hov { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
     // View buttons (multi-touch, waveforms, extra properties, track inspector): not available yet, greyed out (drawn
     // in their colours faded into the title bar, like `Ui::veil`; a veil would show over the bar's gradient).
     let bg = ui.t.window_title;

@@ -124,7 +124,7 @@ impl Sw {
     fn vm(&self, f: Font) -> (f32, f32) {
         match f.face {
             Face::Ui => self.ui,
-            Face::Light | Face::System => SEGOE_UI,
+            Face::Light | Face::System | Face::SystemRegular => SEGOE_UI,
         }
     }
 

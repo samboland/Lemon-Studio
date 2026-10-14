@@ -7852,6 +7852,29 @@ mod tests {
     }
 
     #[test]
+    fn piano_control_popup_escapes_floating_window() {
+        let Ok(mut c) = Canvas::new(1280, 800, 1.0) else { return };
+        let mut app = App::new(None);
+        app.theme = design_theme(os_theme::Design::Classic, true);
+        app.state.z = vec![Win::PianoRoll];
+        let ws = &mut app.state.wins[Win::PianoRoll.slot().unwrap()];
+        ws.maxed = false;
+        ws.rect = Rect::new(400.0, 100.0, 540.0, 320.0);
+        frame(&mut app, &mut c, None);
+        let control = hit_rect(&app, &Action::PianoLaneMenu);
+        click(&mut app, &mut c, control);
+        assert!(app.state.lane_menu);
+        let repeat = hit_rect(&app, &Action::PianoLanePick(6));
+        assert!(repeat.y > app.state.win_rect(Win::PianoRoll).bottom());
+        assert!(app.overlays.iter().any(|r| r.intersect(&repeat) == repeat));
+        let px = c.pixmap.pixel((repeat.x + 5.0) as u32, repeat.cy() as u32).unwrap();
+        assert_eq!((px.red(), px.green(), px.blue()), (131, 131, 133), "the popup paints outside the child window");
+        click(&mut app, &mut c, repeat);
+        assert_eq!(app.state.piano.lane, piano::Lane::Repeat);
+        assert!(!app.state.lane_menu);
+    }
+
+    #[test]
     fn browser_dropped_folder() {
         use crate::views::browser::{rows, Item};
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
@@ -8342,8 +8365,9 @@ mod tests {
         frame(&mut app, &mut c, None);
         let band = hit_rect(&app, &Action::PianoSplitter);
         let (grid, panel) = (app.piano_grid.unwrap(), app.piano_panel.unwrap());
-        assert_eq!((panel.h, band.y), (177.0, panel.y - 8.0), "the default layout");
         let h = panel.bottom() - grid.y - 8.0;
+        assert_eq!(grid.h, (h * crate::piano_split::DEFAULT_GRID_SHARE).round(), "the default layout follows window height");
+        assert_eq!(band.y, panel.y - 8.0);
         app.mouse_move(band.cx(), band.y + 3.0);
         frame(&mut app, &mut c, None);
         assert_eq!(app.cursor(), Cursor::NsResize);
@@ -8353,7 +8377,7 @@ mod tests {
         app.mouse_move(band.cx(), band.y - 97.0);
         app.mouse_up();
         frame(&mut app, &mut c, None);
-        assert_eq!(app.piano_panel.unwrap().h, 277.0);
+        assert_eq!(app.piano_panel.unwrap().h, panel.h + 100.0);
         assert_eq!(app.piano_grid.unwrap().h + app.piano_panel.unwrap().h, h);
         // Down to 30 px of panel: held at 45; past half of that, collapsed.
         let drag_to = |app: &mut App, c: &mut Canvas, panel_h: f32| {

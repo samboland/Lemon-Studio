@@ -30,5 +30,15 @@ Settings page controls accept
 input only inside the visible page. Floating titles use an ellipsis before window buttons.
 Classic window titles use the system font, following the native FL captions.
 Classic Settings dropdown arrows point down.
+General Settings retains the scaling help button and shaded slider handles.
+The default Piano roll split follows window height, leaving most space for notes.
+Saved split positions and panel collapse behavior remain available.
+Classic context menus use a neutral gray panel and regular black system text.
+Window options arrows point down, following the native Playlist, Piano roll, and Mixer.
+Classic Piano roll keys use smooth shading instead of visible color bands.
+The Control selector follows native menu sizing and selection styling.
+Its popup paints above child windows and stays inside the main window.
+Classic context menu hover uses dark gray with light text, matching native FL.
+General Settings slider rails use two device pixels, with shaded oval handles.
 Classic Mixer FX slots use horizontal separators and downward menu arrows,
 following the captured FL Studio Wide layout.

@@ -332,7 +332,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
         }
         GENERAL => vec![
             Group { note: " (requires a restart to take effect)", ..gf("Display", false, vec![
-                combo("System", 64.0, "Main GUI scaling"),
+                combo("System", 68.0, "Main GUI scaling"),
                 dim("Display PPI", txt("Define 1 inch / 2.54 cm or set display's PPI")),
                 dim("Display PPI", Text("(96 PPI/advised scaling: 100%)".into(), true)),
                 Slider("", 0.25),
@@ -749,8 +749,8 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
     if lemon {
         lk::outlined(ui.c, r, lk::r_panel(t) - 2.0, t.s(0x1c1e21), t.s(0x25272a));
     } else {
-        ui.c.fill_rect(r, t.window_border);
-        ui.c.fill_rect(r.inset(1.0), t.s(0x25272a));
+        ui.c.fill_rect(r, t.s(0x1c1e21));
+        ui.c.fill_rect(r.inset(1.0 / ui.c.scale), t.s(0x25272a));
     }
     let mut y = r.y + 8.0;
     if !gr.title.is_empty() {
@@ -758,8 +758,8 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
         let tw = ui.c.text_width(f, gr.title);
         let hdr = Rect::new(r.x + 1.0, r.y + 1.0, tw + ui.c.text_width(Font::system(11), gr.note) + 8.0, 19.0);
         if !lemon {
-            ui.c.fill_rect(hdr, t.s(0x2b2d2f));
-            ui.c.fill_polygon(&[(hdr.right(), hdr.y), (hdr.right() + 6.0, hdr.y), (hdr.right(), hdr.bottom())], t.s(0x2b2d2f));
+            ui.c.fill_rect(hdr, t.s(0x212326));
+            ui.c.fill_polygon(&[(hdr.right(), hdr.y), (hdr.right() + 6.0, hdr.y), (hdr.right(), hdr.bottom())], t.s(0x212326));
         }
         ui.c.text(f, r.x + 4.0, r.y + 2.0, if lemon { t.accent } else { t.text }, gr.title);
         if !gr.note.is_empty() {
@@ -880,8 +880,17 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
             let b = Rect::new(x0, y + 3.0, *w, 21.0);
             ui.off(b, name_of(label, group));
             settings_combo(ui, b, v, f, false);
-            let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, label);
-            grey(ui, Rect::new(b.x, b.y, b.w + 8.0 + lw, b.h));
+            let gap = if *label == "Main GUI scaling" {
+                let help = Rect::new(b.right(), b.y, 24.0, b.h);
+                ui.off(help, "GUI scaling help");
+                let x = help.right() - 6.0;
+                ui.c.fill_polygon(&[(help.x, help.y), (x, help.y), (help.right(), help.cy()), (x, help.bottom()), (help.x, help.bottom())], t.s(0x101112));
+                ui.c.fill_polygon(&[(help.x + 1.0, help.y + 1.0), (x - 0.5, help.y + 1.0), (help.right() - 1.0, help.cy()), (x - 0.5, help.bottom() - 1.0), (help.x + 1.0, help.bottom() - 1.0)], t.s(0x161719));
+                ui.c.text_center(Font::system(17), Rect::new(help.x, help.y, 18.0, help.h), t.text, "?");
+                28.0
+            } else { 8.0 };
+            let lw = ui.c.text(f, b.right() + gap, ty, t.text, label);
+            grey(ui, Rect::new(b.x, b.y, b.w + gap + lw, b.h));
         }
         Row::Value(v, label) => {
             let b = Rect::new(x0, y + 3.0, 38.0, 21.0);
@@ -921,22 +930,36 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         }
         Row::Slider(label, v) => {
             let width = if label.is_empty() { 270.0 } else if *label == "Smoothing" { 60.0 } else { 150.0 };
-            let tr = Rect::new(x0, cy - 2.0, width, 4.0);
+            let rail_h = if !super::lemon(ui) && !label.is_empty() { 2.0 / ui.c.scale } else { 4.0 };
+            let tr = Rect::new(x0, cy - 2.0, width, rail_h);
             if super::lemon(ui) {
                 ui.c.fill_rrect(tr, 2.0, t.s(0x161819));
                 ui.c.fill_rrect(Rect::new(tr.x, tr.y, tr.w * v, tr.h), 2.0, t.accent);
             } else {
-                ui.c.fill_rect(tr, t.s(0x161819));
+                ui.c.fill_rrect(tr, 1.0 / ui.c.scale, t.s(0x161819));
                 ui.c.fill_rect(Rect::new(tr.x, tr.y, tr.w * v, tr.h), if label.is_empty() { t.text_dim } else { Color::rgb(0xe60000) });
+                if !label.is_empty() {
+                    for tick in 0..=4 {
+                        ui.c.fill_rect(Rect::new(tr.x + tr.w * tick as f32 / 4.0, cy + 5.0, 1.0 / ui.c.scale, 10.0), t.s(0x1b1d1f));
+                    }
+                }
             }
             if !label.is_empty() {
                 let hx = tr.x + tr.w * v;
-                ui.c.fill_circle(hx, cy, 8.0, t.s(0x111213));
-                ui.c.fill_circle(hx, cy, 7.0, t.s(0x4a4d50));
-                ui.c.fill_rect(Rect::new(hx - 0.5, cy - 6.0, 1.0, 5.0), t.s(0x1a1b1c));
+                if super::lemon(ui) {
+                    ui.c.fill_circle(hx, cy, 8.0, t.s(0x111213));
+                    ui.c.fill_circle(hx, cy, 7.0, t.s(0x4a4d50));
+                    ui.c.fill_rect(Rect::new(hx - 0.5, cy - 6.0, 1.0, 5.0), t.s(0x1a1b1c));
+                } else {
+                    let handle = Rect::new(hx - 8.0, cy - 10.0, 16.0, 20.0);
+                    ui.c.fill_rrect(handle.outset(0.7), 8.7, t.s(0x101112));
+                    ui.c.fill_rect_gradient(handle, t.s(0x626568), t.s(0x08090a), 8.0);
+                    ui.c.fill_rect_gradient(handle.inset(1.0), t.s(0x34383b), t.s(0x08090a), 7.0);
+                    ui.c.fill_rect(Rect::new(hx, cy - 6.0, 1.0, 12.0), Color::rgb(0xe60000));
+                }
             }
             let lw = ui.c.text(f, tr.right() + 12.0, ty, t.text, label);
-            let r = Rect::span(tr.x - 9.0, tr.right() + 14.0 + lw, cy - 9.0, cy + 9.0);
+            let r = Rect::span(tr.x - 9.0, tr.right() + 14.0 + lw, cy - 11.0, cy + 11.0);
             ui.off(r, name_of(label, group));
             grey(ui, r);
         }

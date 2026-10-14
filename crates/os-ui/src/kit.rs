@@ -407,6 +407,22 @@ pub fn scrollbar(c: &mut Canvas, t: &Palette, track: Rect, vertical: bool, pos: 
     c.fill_rect(track, t.scrollbar);
     let len = if vertical { track.h } else { track.w };
     let (off, tl) = thumb(len, pos, view, total);
+    let cross = if vertical { track.w } else { track.h };
+    if cross >= 19.0 {
+        // Broad editor scrollbars have a square thumb with a one-device-pixel bevel.
+        let pixel = 1.0 / c.scale;
+        let r = if vertical {
+            Rect::new(track.x, track.y + off, track.w, tl)
+        } else {
+            Rect::new(track.x + off, track.y, tl, track.h)
+        };
+        let col = t.overview.shade(if st.pressed { 0.02 } else if st.hover { -0.08 } else { -0.18 });
+        c.fill_rect(r, t.scrollbar.shade(-0.1));
+        c.fill_rect(r.inset(pixel), col);
+        c.fill_rect(Rect::new(r.x, r.y, r.w, pixel), col.shade(0.09));
+        c.fill_rect(Rect::new(r.x, r.y, pixel, r.h), col.shade(0.09));
+        return;
+    }
     let r = if vertical {
         Rect::new(track.x + 2.0, track.y + off, track.w - 4.0, tl)
     } else {

@@ -459,9 +459,12 @@ fn row_h(m: &os_ui::kit::menu::Metrics, it: &Item) -> f32 {
 pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize) {
     let Some(m) = MENUS.get(menu) else { return };
     let x0 = bar_layout(ui.c)[menu].0;
-    let t = ui.t;
+    let colors = super::context_palette(ui.t);
+    let t = &colors;
     let mt = os_ui::kit::menu::metrics(ui.c.scale);
     let (row, border) = (mt.row, mt.border);
+    let lemon = super::lemon(ui);
+    let font = if lemon { Font::new(14) } else { Font::system_regular(11) };
 
     // Pattern list column: one row per project pattern (spec: ui/menus.md, PATTERNS).
     // spec: ui/pattern-menu.md §2: only used patterns, the column as wide as the longest name.
@@ -470,7 +473,7 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize) {
     } else {
         Vec::new()
     };
-    let list_w = pats.iter().map(|(_, n)| ui.c.text_width(Font::new(14), n) + 28.0).fold(80.0f32, f32::max).ceil();
+    let list_w = pats.iter().map(|(_, n)| ui.c.text_width(font, n) + 28.0).fold(80.0f32, f32::max).ceil();
     let col_w = |ci: usize, w: f32| if menu == PATTERNS && ci == 0 { list_w } else { w };
 
     let width: f32 = m.cols.iter().enumerate().map(|(ci, (w, _))| col_w(ci, *w)).sum::<f32>() + border * 2.0;
@@ -483,21 +486,19 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize) {
         .fold(0.0, f32::max);
     let (ax, ay) = match (menu == PATTERNS, s.pat_ui.menu_at) {
         (true, Some(at)) => at,
-        _ => (x0 - 4.0, 78.0),
+        _ => (x0 - 4.0, 78.0 - if lemon { 0.0 } else { 1.0 / ui.c.scale }),
     };
     let r = Rect::new(ax.min(s.screen.0 - width).max(0.0), ay, width, body_h + border * 2.0);
     let away = !r.contains(ui.mouse.0, ui.mouse.1);
     // Lemon (spec: ui/lemon-design.md §9): a rounded panel, rounded row highlights.
-    let lemon = super::lemon(ui);
     if lemon {
         os_ui::kit::popup(ui.c, t, r);
     } else {
-        ui.c.fill_rect(r, t.menu_pop);
-        ui.c.stroke_rrect(Rect::new(r.x + mt.line, r.y + mt.line, r.w - 2.0 * mt.line, r.h - 2.0 * mt.line), 0.0, border, t.menu_pop_border);
+        ui.c.fill_rect(r, t.menu_pop_border);
+        ui.c.fill_rect(r.inset(border), t.menu_pop);
     }
     ui.hit(r, Action::Swallow, "");
 
-    let font = Font::new(14);
     // Text sits where it does at 100 %, moved by half of what the row lost.
     let dy = (row - os_ui::kit::menu::ROW) / 2.0;
     let mut cx = r.x + border;
@@ -536,13 +537,15 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize) {
                     } else {
                         ui.c.fill_rect(rr, t.menu_pop_head);
                     }
-                    ui.c.text(Font::new(12), rr.x + 4.0, rr.y + 1.0 + (h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, item.label);
+                    let head_font = if lemon { Font::new(12) } else { Font::system_regular(10) };
+                    ui.c.text(head_font, rr.x + 4.0, rr.y + 1.0 + (h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, item.label);
                 }
                 Kind::Item => {
                     let ok = works(menu, item);
+                    let hovered = ok && ui.hit(rr, item_action(menu, flat, item), item.label);
                     // Greyed-out entries never light up; they only say they are not available yet.
                     if ok {
-                        if ui.hit(rr, item_action(menu, flat, item), item.label) {
+                        if hovered {
                             if lemon {
                                 os_ui::kit::row_highlight(ui.c, t, rr);
                             } else {
@@ -552,33 +555,34 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize) {
                     } else {
                         ui.off(rr, item.label);
                     }
-                    let color = if ok { t.menu_pop_text } else { t.menu_pop_dim };
+                    let color = if !ok { t.menu_pop_dim } else if hovered && !lemon { t.text } else { t.menu_pop_text };
                     let mark = mark_of(s, menu, item);
                     let (mx, my) = (rr.x + 10.0, rr.y + row / 2.0);
                     match mark {
                         Mark::Check(true) => {
-                            ui.c.line(mx - 4.0, my, mx - 1.0, my + 3.0, 1.5, t.menu_pop_text);
-                            ui.c.line(mx - 1.0, my + 3.0, mx + 4.0, my - 3.0, 1.5, t.menu_pop_text);
+                            ui.c.line(mx - 4.0, my, mx - 1.0, my + 3.0, 1.5, color);
+                            ui.c.line(mx - 1.0, my + 3.0, mx + 4.0, my - 3.0, 1.5, color);
                         }
                         Mark::Radio(on) => {
                             if on {
-                                ui.c.fill_circle(mx, my, 3.0, t.menu_pop_text);
+                                ui.c.fill_circle(mx, my, 3.0, color);
                             } else {
                                 ui.c.stroke_circle(mx, my, 3.5, 1.0, t.menu_pop_dim);
                             }
                         }
                         _ => {}
                     }
-                    ui.c.text_clip(font, rr.x + 20.0, rr.y + 2.0 + dy, rr.w - 24.0, color, item.label);
+                    let lead = if lemon { 20.0 } else { 16.0 };
+                    ui.c.text_clip(font, rr.x + lead, rr.y + 2.0 + dy, rr.w - lead - 4.0, color, item.label);
                     let right = rr.right() - if item.sub { 16.0 } else { 8.0 };
                     if !item.shortcut.is_empty() {
-                        let sc = if ok { t.menu_pop_shortcut } else { t.menu_pop_dim.mix(t.menu_pop, 0.35) };
+                        let sc = if hovered && !lemon { color } else if ok { t.menu_pop_shortcut } else { t.menu_pop_dim.mix(t.menu_pop, 0.35) };
                         ui.c.text_right(font.italic(), right, rr.y + 3.0 + dy, sc, item.shortcut);
                     }
                     if item.sub {
                         let ax = rr.right() - 11.0;
-                        ui.c.line(ax, my - 3.5, ax + 3.5, my, 1.2, t.menu_pop_dim);
-                        ui.c.line(ax + 3.5, my, ax, my + 3.5, 1.2, t.menu_pop_dim);
+                        ui.c.line(ax, my - 3.5, ax + 3.5, my, 1.2, if hovered { color } else { t.menu_pop_dim });
+                        ui.c.line(ax + 3.5, my, ax, my + 3.5, 1.2, if hovered { color } else { t.menu_pop_dim });
                     }
                 }
             }
