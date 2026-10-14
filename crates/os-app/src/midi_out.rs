@@ -279,6 +279,23 @@ mod tests {
         assert!(wanted(&m).is_empty(), "OPTIONS > Enable MIDI output");
     }
 
+    /// OPTIONS > Enable MIDI remote control / output / master sync work: each toggles its switch in the settings.
+    #[test]
+    fn options_menu_switches() {
+        use crate::views::menus::OPTIONS_MENU;
+        let mut app = crate::app::App::new(None);
+        for label in ["Enable MIDI remote control", "Enable MIDI output", "Enable MIDI master sync"] {
+            assert!(crate::menu_registry::handles(OPTIONS_MENU, label), "{label} works");
+            assert_eq!(crate::menu_options::midi_tick(label), Some(true), "{label} is on at first");
+            assert!(crate::menu_registry::run(&mut app, OPTIONS_MENU, label));
+            assert_eq!(crate::menu_options::midi_tick(label), Some(false));
+            assert_eq!(app.state.message, Some(format!("{label}: off")));
+        }
+        let c = crate::midi_in::cfg();
+        assert!(!c.remote && !c.output && !c.sync);
+        assert_eq!(crate::menu_options::midi_tick("Metronome"), None);
+    }
+
     /// Clock sent to a loopback port (ALSA's "Midi Through", a loopMIDI port) arrives as start, clock and stop. Needs
     /// such a port: `cargo test -p os-app midi_clock_loopback -- --ignored`.
     #[test]
