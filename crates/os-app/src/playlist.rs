@@ -244,6 +244,12 @@ pub enum Cmd {
     ClipRename(usize),
     ClipRandomColor(usize),
     ClipPreview(usize),
+    /// Clip menu (§10): cut the clip at its notes (a pattern clip) or at every beat; merge the selected pattern clips
+    /// into one pattern; delete the clip's pattern or channel; play an automation clip backwards.
+    ClipChop(usize),
+    ClipMerge(usize),
+    ClipDeleteSource(usize),
+    ClipReverse(usize),
     PointDelete(u16, usize),
     PointMode(u16, usize, AutoMode),
     PointValue(u16, usize),
@@ -273,6 +279,8 @@ pub enum Cmd {
     TrackDelete(u16),
     TrackColor(u16, Option<Rgb>),
     TrackMuteClips(u16, bool),
+    /// Lock the track to its content, or unlock it (`lock_track`).
+    TrackLock(u16),
     /// "Create automation clip" on a control: target, name, current value 0..1.
     CreateAutomation(u32, String, f64),
     ResetEmptyTracks,
@@ -375,6 +383,15 @@ pub enum EditTarget {
     SlotName(u16, u8),
     /// The current arrangement's name (§12).
     ArrangementName,
+    /// An audio or automation clip's channel name (the clip menu's Rename, §10).
+    ChannelName(u16),
+    /// A new time signature marker at a tick (§7), a pattern's time signature (PATTERNS > Set time signature...):
+    /// "n/d".
+    NewSignature(u32),
+    PatternSignature(u16),
+    /// PATTERNS > Render as audio clip... / Render and replace...: the audio clip's name; Enter renders pattern `n`
+    /// (`true`: its clips are replaced).
+    RenderPattern(u16, bool),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1004,9 +1021,14 @@ pub fn snap_delta(s: &State, g: &PGeom, dt: f32, alt: bool) -> i64 {
     ((dt / u).round() * u) as i64
 }
 
-/// Place a clip of the current source on `track` at `tick`; returns its index.
+/// Place a clip of the current source on `track` at `tick` (of its content on a locked track); returns its index.
 pub fn place(s: &mut State, track: u16, tick: u32) -> usize {
-    let src = source(s);
+    let src = track_source(s, track);
+    place_src(s, track, tick, src)
+}
+
+/// Place a clip of `src` on `track` at `tick`; returns its index.
+fn place_src(s: &mut State, track: u16, tick: u32, src: ClipSource) -> usize {
     let len = source_len(s, src);
     let audio = source_kind(s, src) == PickKind::Audio && matches!(src, ClipSource::Channel(_));
     let a = arr_mut(s);
@@ -1499,10 +1521,15 @@ fn end_solo(s: &mut State) {
     }
 }
 
-/// Make unique: a pattern clip gets its own copy of the pattern (§5).
+/// Make unique: a pattern clip gets its own copy of the pattern (§5); an audio or automation clip its own copy of its
+/// channel (and of its automation), named as a clone (`unique_channel_name`). Returns the new pattern number or
+/// channel index.
 pub fn make_unique(s: &mut State, i: usize) -> Option<u16> {
     let c = *clips(s).get(i)?;
-    let ClipSource::Pattern(n) = c.source else { return None };
+    let n = match c.source {
+        ClipSource::Pattern(n) => n,
+        ClipSource::Channel(ch) => return unique_channel(s, i, ch),
+    };
     let mut p = s.project.pattern(n).cloned().unwrap_or(os_model::Pattern { number: n, ..Default::default() });
     let next = s.project.patterns.iter().map(|p| p.number).max().unwrap_or(0).max(n) + 1;
     let base = p.name.clone().unwrap_or_else(|| format!("Pattern {n}"));
@@ -1516,6 +1543,175 @@ pub fn make_unique(s: &mut State, i: usize) -> Option<u16> {
     s.pattern = next;
     s.piano.dirty = true;
     Some(next)
+}
+
+/// The content track `t` is locked to: the source of its first clip while the track is locked (Lemon Studio's meaning
+/// of the stored lock, after FL's "Lock to content": drawing on the track places that content, clicking its header
+/// picks it; spec: ui/playlist.md §6).
+pub fn locked_source(s: &State, t: u16) -> Option<ClipSource> {
+    if !track_info(s, t).is_some_and(|x| x.locked) {
+        return None;
+    }
+    clips(s).iter().filter(|c| c.track == t).min_by_key(|c| c.position).map(|c| c.source)
+}
+
+/// What Draw and Paint place on track `t`: its locked content, else the current source.
+pub fn track_source(s: &State, t: u16) -> ClipSource {
+    locked_source(s, t).unwrap_or_else(|| source(s))
+}
+
+/// Lock track `t` to its content (`on`), or unlock it; a track without clips has no content to lock to. Returns
+/// whether the track's lock changed.
+pub fn lock_track(s: &mut State, t: u16, on: bool) -> bool {
+    let has = clips(s).iter().any(|c| c.track == t);
+    let Some(tr) = arr_mut(s).tracks.get_mut(usize::from(t)) else { return false };
+    let want = on && has;
+    if tr.locked == want {
+        return false;
+    }
+    tr.locked = want;
+    s.piano.dirty = true;
+    true
+}
+
+/// TOOLS > Lock all playlist tracks to content (`on`) / Unlock all playlist tracks from content: every track with
+/// clips is locked, every track unlocked. One undo step; returns how many tracks changed.
+pub fn lock_all(s: &mut State, on: bool) -> usize {
+    snapshot(s);
+    let n = (0..TRACKS).filter(|&t| lock_track(s, t, on)).count();
+    if n == 0 {
+        s.playlist.undo.pop();
+    }
+    n
+}
+
+/// Chop (clip menu, §10): cut clip `i` where its notes start (a pattern clip; every beat when it shows no notes), or
+/// at every beat (audio and automation clips) (Lemon Studio choice). Returns how many cuts were made.
+pub fn chop(s: &mut State, i: usize) -> usize {
+    let Some(c) = clips(s).get(i).copied() else { return 0 };
+    let (w0, w1) = window(s, &c);
+    let mut cuts: Vec<u32> = match c.source {
+        ClipSource::Pattern(n) => s
+            .project
+            .pattern(n)
+            .map(|p| p.notes.iter().filter(|x| f64::from(x.position) > w0 && f64::from(x.position) < w1).map(|x| c.position + (f64::from(x.position) - w0).round() as u32).collect())
+            .unwrap_or_default(),
+        ClipSource::Channel(_) => Vec::new(),
+    };
+    if cuts.is_empty() {
+        let beat = ppq(s);
+        cuts = (c.position / beat + 1..).map(|k| k * beat).take_while(|&t| t < c.end()).collect();
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    let (mut cur, mut n) = (i, 0);
+    for t in cuts {
+        if let Some(right) = split(s, cur, t) {
+            cur = right;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Merge pattern clips (clip menu, §10): the selected pattern clips (with clip `i`) become one clip of a new pattern
+/// holding what each of them plays, where it plays it, on clip `i`'s track (Lemon Studio choice). Returns the new
+/// pattern, or a message why nothing was merged.
+pub fn merge_pattern_clips(s: &mut State, i: usize) -> Result<u16, String> {
+    let mut idx = if s.playlist.sel.contains(&i) { s.playlist.sel.clone() } else { vec![i] };
+    idx.retain(|&k| clips(s).get(k).is_some_and(|c| matches!(c.source, ClipSource::Pattern(_))));
+    idx.sort_unstable();
+    idx.dedup();
+    if idx.len() < 2 {
+        return Err("Merge pattern clips: select two or more pattern clips".into());
+    }
+    let cs: Vec<Clip> = idx.iter().map(|&k| clips(s)[k]).collect();
+    let a = cs.iter().map(|c| c.position).min().unwrap_or(0);
+    let b = cs.iter().map(Clip::end).max().unwrap_or(a);
+    let mut notes = Vec::new();
+    for c in &cs {
+        let ClipSource::Pattern(n) = c.source else { continue };
+        let (w0, w1) = window(s, c);
+        for x in s.project.pattern(n).map(|p| p.notes.as_slice()).unwrap_or(&[]) {
+            let p = f64::from(x.position);
+            if p >= w0 && p < w1 {
+                let mut x = *x;
+                x.position = c.position - a + (p - w0).round() as u32;
+                notes.push(x);
+            }
+        }
+    }
+    notes.sort_by_key(|x| x.position);
+    let track = clips(s)[i].track;
+    let number = crate::patterns::first_empty(s);
+    let first = cs.iter().find_map(|c| if let ClipSource::Pattern(n) = c.source { Some(n) } else { None }).unwrap_or(1);
+    let name = format!("{} merged", source_name(s, ClipSource::Pattern(first)));
+    let p = crate::patterns::pat_mut(s, number);
+    p.name = Some(name);
+    p.notes = notes;
+    delete(s, idx);
+    let len = b - a;
+    let k = place_src(s, track, a, ClipSource::Pattern(number));
+    arr_mut(s).clips[k].length = len;
+    s.playlist.sel = vec![k];
+    s.playlist.source = Some(ClipSource::Pattern(number));
+    s.pattern = number;
+    Ok(number)
+}
+
+/// Reverse (clip menu, §10): automation channel `ch`'s curve plays backwards: every point mirrored in time over the
+/// curve's length, each segment keeping its shape mirrored (tension negated).
+pub fn reverse_automation(s: &mut State, ch: u16) -> bool {
+    let Some(a) = s.project.automation_mut(ch) else { return false };
+    let n = a.points.len();
+    if n < 2 {
+        return false;
+    }
+    let end = a.points[n - 1].beat;
+    let old = a.points.clone();
+    for (k, p) in a.points.iter_mut().enumerate() {
+        let o = old[n - 1 - k];
+        p.beat = (end - o.beat).max(0.0);
+        p.value = o.value;
+        if k > 0 {
+            // The segment ending here was the one ending at the next older point.
+            let seg = old[n - k];
+            p.mode = seg.mode;
+            p.tension = -seg.tension;
+            p.flag = seg.flag;
+        } else {
+            p.mode = old[0].mode;
+            p.tension = old[0].tension;
+            p.flag = old[0].flag;
+        }
+    }
+    s.piano.dirty = true;
+    true
+}
+
+/// `make_unique` for the clip `i` of channel `ch`: a copy of the channel (and its automation) after the last one,
+/// the clip moved onto it; its other clips keep the original (Lemon Studio choice, as FL's audio clips do).
+fn unique_channel(s: &mut State, i: usize, ch: u16) -> Option<u16> {
+    let mut copy = s.project.channel(ch)?.clone();
+    let index = s.project.channels.iter().map(|c| c.index + 1).max().unwrap_or(0);
+    let base = copy.name.clone().unwrap_or_else(|| source_name(s, ClipSource::Channel(ch)));
+    let base = match base.rsplit_once(" #") {
+        Some((b, k)) if k.parse::<u32>().is_ok() => b.to_string(),
+        _ => base,
+    };
+    copy.name = Some(unique_channel_name(s, &base));
+    copy.index = index;
+    if let Some(mut a) = s.project.automation(ch).cloned() {
+        a.channel = index;
+        s.project.automations.push(a);
+    }
+    s.project.channels.push(copy);
+    if let Some(cl) = arr_mut(s).clips.get_mut(i) {
+        cl.source = ClipSource::Channel(index);
+    }
+    s.playlist.source = Some(ClipSource::Channel(index));
+    s.piano.dirty = true;
+    Some(index)
 }
 
 /// First track at or below `from` with no clips overlapping `[a, b)`.
@@ -1568,6 +1764,17 @@ pub fn create_automation(s: &mut State, tgt: u32, name: &str, value: f64) -> u16
     index
 }
 
+/// ADD > Automation clip: an automation clip linked to nothing (no targets; spec: audio/automation.md "The link"), made
+/// as `create_automation` makes one, flat at the middle. Returns its channel.
+pub fn create_unlinked_automation(s: &mut State) -> u16 {
+    // Any unipolar target picks the record template; the link is then cut.
+    let ch = create_automation(s, 0, "Automation clip", 0.5);
+    if let Some(a) = s.project.automation_mut(ch) {
+        a.targets.clear();
+    }
+    ch
+}
+
 /// `name`, or `name #2`, `name #3`... when a channel already has it (spec: plugins/plugin-parameters.md §4).
 pub fn unique_channel_name(s: &State, name: &str) -> String {
     let taken = |n: &str| s.project.channels.iter().any(|c| c.name.as_deref() == Some(n));
@@ -1581,6 +1788,18 @@ pub fn unique_channel_name(s: &State, name: &str) -> String {
 pub fn add_audio_clip(s: &mut State, path: &str, track: u16, tick: u32) -> Option<usize> {
     s.playlist.wave(path)?;
     snapshot(s);
+    let index = add_audio_channel(s, path)?;
+    s.playlist.source = Some(ClipSource::Channel(index));
+    s.playlist.picker = PickKind::Audio;
+    let i = place_src(s, track, tick, ClipSource::Channel(index));
+    s.playlist.sel = vec![i];
+    Some(i)
+}
+
+/// Add an audio clip channel for a sample file (named after the file, on the next free mixer insert); returns its
+/// index. `None` when the file cannot be read.
+fn add_audio_channel(s: &mut State, path: &str) -> Option<u16> {
+    s.playlist.wave(path)?;
     let index = s.project.channels.iter().map(|c| c.index + 1).max().unwrap_or(0);
     let name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Audio".into());
     let mixer_track = (s.project.channels.iter().map(|c| c.mixer_track).max().unwrap_or(0) + 1).min(crate::mixer::max_insert(&s.project));
@@ -1600,11 +1819,7 @@ pub fn add_audio_clip(s: &mut State, path: &str, track: u16, tick: u32) -> Optio
         layer_children: Vec::new(),
         envelopes: Default::default(), rack: Default::default(), misc: Default::default(), sound: Default::default(),
     });
-    s.playlist.source = Some(ClipSource::Channel(index));
-    s.playlist.picker = PickKind::Audio;
-    let i = place(s, track, tick);
-    s.playlist.sel = vec![i];
-    Some(i)
+    Some(index)
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1838,6 +2053,7 @@ pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
         PickKind::Audio => "Audio clip",
         PickKind::Automation => "Automation clip",
     };
+    let kind = source_kind(s, c.source);
     let mut items = vec![
         PItem::head(head),
         PItem::new("Preview", Cmd::ClipPreview(i)),
@@ -1846,13 +2062,25 @@ pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
         PItem::sep(),
         PItem::new("Rename...", Cmd::ClipRename(i)),
         PItem::new("Random color", Cmd::ClipRandomColor(i)),
+        // A colour of the clip's own needs its place in the clip record (not measured yet): Random color colours the
+        // source.
+        PItem::not_yet("Clip color..."),
         PItem::sep(),
     ];
     if let ClipSource::Pattern(_) = c.source {
         items.push(PItem::new("Edit pattern", Cmd::ClipEditSource(i)));
-        items.push(PItem::new("Make unique", Cmd::ClipUnique(i)));
     }
+    items.push(PItem::new("Make unique", Cmd::ClipUnique(i)));
+    items.push(PItem::new("Chop", Cmd::ClipChop(i)));
+    match kind {
+        PickKind::Pattern => items.push(PItem::new("Merge pattern clips", Cmd::ClipMerge(i))),
+        PickKind::Automation => items.push(PItem::new("Reverse", Cmd::ClipReverse(i))),
+        // Reversing an audio clip reverses its channel's sample, which its Lemon Sampler must take live (not yet).
+        PickKind::Audio => items.push(PItem::not_yet("Reverse")),
+    }
+    items.push(PItem::sep());
     items.push(PItem::new("Select all similar clips", Cmd::ClipSelectSimilar(i)));
+    items.push(PItem::new("Delete source", Cmd::ClipDeleteSource(i)));
     items.push(PItem::new("Delete", Cmd::ClipDelete(i)));
     Popup { x, y, items, sub: None }
 }
@@ -1895,6 +2123,7 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
         PItem::new("Solo", Cmd::TrackSolo(t)).mark(Mark::Check(s.playlist.solo.as_ref().is_some_and(|x| x.0 == t))),
         PItem::new("Mute all clips", Cmd::TrackMuteClips(t, true)),
         PItem::new("Unmute all clips", Cmd::TrackMuteClips(t, false)),
+        PItem::new("Lock to content", Cmd::TrackLock(t)).mark(Mark::Check(track_info(s, t).is_some_and(|x| x.locked))),
         PItem::sep(),
         PItem::new("Group with above track", Cmd::TrackGroup(t)).mark(Mark::Check(track_info(s, t).is_some_and(|x| x.grouped))),
         PItem::new("Collapse group", Cmd::GroupCollapse(t))
@@ -1945,7 +2174,8 @@ pub enum PlDrag {
     Playback,
     SongPos,
     TimeSel { t0: u32 },
-    Marker { i: usize, dt: i64, t0: u32 },
+    /// A marker pressed at `x0`: it moves once the mouse has gone a few pixels (`moved`).
+    Marker { i: usize, x0: f32, t0: u32, moved: bool },
     Point { ch: u16, clip: usize, i: usize, x0: f32, y0: f32, beat0: f64, v0: f64, lock: Option<bool> },
     Tension { ch: u16, i: usize, y0: f32, t0: f32 },
     /// An audio clip's fade-in (`out` false) or fade-out handle (§9a).
@@ -2424,7 +2654,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             // Clips back to back along the track from the first, up to the mouse (either direction).
             let t = g.tick_at(x).max(0.0) as i64;
             let k = (t - i64::from(start)).div_euclid(i64::from(len));
-            let src = source(s);
+            let src = track_source(s, track);
             for j in k.min(0)..=k.max(0) {
                 let pos = i64::from(start) + j * i64::from(len);
                 if pos < 0 {
@@ -2474,12 +2704,20 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             let t = snap_round(s, &g, g.tick_at(x), alt);
             s.playlist.range = (t != t0).then(|| (t0.min(t), t0.max(t)));
         }
-        PlDrag::Marker { i, t0, .. } => {
-            let t = snap_round(s, &g, g.tick_at(x), alt);
-            let _ = t0;
+        PlDrag::Marker { i, x0, t0, moved } => {
+            if !moved && (x - x0).abs() < 4.0 {
+                return;
+            }
+            app.drag = Some(Drag::Pl(PlDrag::Marker { i, x0, t0, moved: true }));
+            let s = &mut app.state;
+            // By the snapped distance the mouse went, so the marker does not jump to the mouse.
+            let dt = snap_delta(s, &g, (x - x0) / g.ppt, alt);
+            let t = (i64::from(t0) + dt).max(0) as u32;
             if let Some(m) = arr_mut(s).markers.get_mut(i) {
                 m.position = t;
             }
+            s.playlist.pos = t;
+            s.piano.dirty = true;
         }
         PlDrag::Point { ch, clip, i, x0, y0, beat0, v0, lock } => {
             let Some(c) = clips(s).get(clip).copied() else { return };
@@ -2586,17 +2824,11 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
         }
         PlDrag::ZoomBox { x0, y0 } => zoom_to(app, grid, x0, y0),
         PlDrag::Playback => app.transport.stop(),
-        PlDrag::SongPos => {
-            // The song jumps to the new position; a running pattern goes on as the song from there, a paused one
-            // stops, as with the PAT / SONG switch (§7, audio/transport.md).
-            if app.transport.playing() {
-                if app.transport.song() || !app.transport.paused() {
-                    let p = app.state.playlist.pos;
-                    app.play_song_from(p);
-                } else {
-                    app.transport.stop();
-                }
-            }
+        PlDrag::SongPos => song_jumped(app),
+        PlDrag::Marker { moved: false, .. } => {
+            // A click on a marker: no move to undo; the song jumps there.
+            s.playlist.undo.pop();
+            song_jumped(app);
         }
         PlDrag::ResizeL { .. } | PlDrag::ResizeR { .. } if !s.playlist.stretch_base.is_empty() => {
             // Stretched channels: their Lemon Sampler takes the new stretch settings (§9b).
@@ -2616,6 +2848,19 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
     }
     let _ = g;
     app.invalidate();
+}
+
+/// The song position was set (a ruler or marker click): the song jumps there; a running pattern goes on as the song
+/// from there, a paused one stops, as with the PAT / SONG switch (§7, audio/transport.md).
+fn song_jumped(app: &mut App) {
+    if app.transport.playing() {
+        if app.transport.song() || !app.transport.paused() {
+            let p = app.state.playlist.pos;
+            app.play_song_from(p);
+        } else {
+            app.transport.stop();
+        }
+    }
 }
 
 /// Zoom tool / Ctrl+right-drag: zoom the time axis to the dragged box (a click zooms in 2x).
@@ -2767,9 +3012,12 @@ pub fn press_markers(app: &mut App, grid: Rect, right: bool) {
     if right {
         s.playlist.popup = Some(marker_menu(i, x, app.mouse.1));
     } else {
+        // A click jumps the song position to the marker (SONG mode, as a ruler click); a drag moves the marker (§7).
         snapshot(s);
         let t0 = markers(s)[i].position;
-        app.drag = Some(Drag::Pl(PlDrag::Marker { i, dt: 0, t0 }));
+        s.playlist.pos = t0;
+        s.song_mode = true;
+        app.drag = Some(Drag::Pl(PlDrag::Marker { i, x0: x, t0, moved: false }));
     }
     app.invalidate();
 }
@@ -2786,6 +3034,14 @@ pub fn press_header(app: &mut App, t: u16, right: bool, at: (f32, f32)) {
     let double = s.playlist.last_header.is_some_and(|(lt, when)| lt == t && now.duration_since(when).as_millis() < 450);
     s.playlist.track = t;
     s.playlist.last_header = Some((t, now));
+    // A track locked to its content makes that content current (§6).
+    if let Some(src) = locked_source(s, t) {
+        s.playlist.source = Some(src);
+        if let ClipSource::Pattern(n) = src {
+            s.pattern = n;
+        }
+        s.playlist.picker = source_kind(s, src);
+    }
     if double {
         start_edit(s, EditTarget::TrackName(t), at);
     }
@@ -2819,6 +3075,16 @@ pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
         EditTarget::PatternName(n) => source_name(s, ClipSource::Pattern(n)),
         EditTarget::MixerName(n) => crate::mixer::name(s, n),
         EditTarget::SlotName(t, k) => crate::mixer::slot_name(s, t, k).unwrap_or_default(),
+        EditTarget::ChannelName(ch) => source_name(s, ClipSource::Channel(ch)),
+        EditTarget::NewSignature(pos) => {
+            let (n, d) = signature_at(s, pos);
+            format!("{n}/{d}")
+        }
+        EditTarget::PatternSignature(n) => {
+            let (n, d) = pattern_signature(s, n);
+            format!("{n}/{d}")
+        }
+        EditTarget::RenderPattern(n, _) => source_name(s, ClipSource::Pattern(n)),
     };
     s.playlist.edit = Some(TextEdit { target, text, at });
 }
@@ -2875,7 +3141,70 @@ pub fn commit_edit(s: &mut State) {
                 s.project.patterns.push(os_model::Pattern { number: n, name: Some(text), ..Default::default() });
             }
         }
+        EditTarget::ChannelName(ch) => {
+            if let Some(c) = s.project.channels.iter_mut().find(|c| c.index == ch) {
+                c.name = (!text.is_empty()).then_some(text);
+            }
+        }
+        EditTarget::NewSignature(pos) => match parse_signature(&text) {
+            Some((n, d)) => {
+                let arr = arr_mut(s);
+                // One signature per position: a second one there replaces it.
+                arr.markers.retain(|m| !(m.kind == TimeMarker::SIGNATURE && m.position == pos));
+                arr.markers.push(TimeMarker { kind: TimeMarker::SIGNATURE, numerator: n, denominator: d, ..TimeMarker::new(pos, "") });
+            }
+            None => {
+                s.playlist.undo.pop();
+                s.message = Some(SIGNATURE_HELP.into());
+            }
+        },
+        EditTarget::PatternSignature(n) => match parse_signature(&text) {
+            Some(sig) => set_pattern_signature(s, n, sig),
+            None => {
+                s.playlist.undo.pop();
+                s.message = Some(SIGNATURE_HELP.into());
+            }
+        },
+        EditTarget::RenderPattern(n, replace) => {
+            if !replace {
+                s.playlist.undo.pop();
+            }
+            s.message = Some(render_pattern(s, n, true, replace, &text));
+        }
     }
+    s.piano.dirty = true;
+}
+
+/// What a time signature box takes (Lemon Studio choice: FL's ranges, 1 to 16 beats of a 2nd to a 16th).
+const SIGNATURE_HELP: &str = "Time signature: type beats / note value, e.g. 3/4 or 7/8 (1-16 / 2, 4, 8 or 16)";
+
+/// A typed time signature "n/d" (spaces allowed): numerator 1 to 16, denominator 2, 4, 8 or 16.
+pub fn parse_signature(text: &str) -> Option<(u8, u8)> {
+    let (a, b) = text.split_once('/')?;
+    let n: u8 = a.trim().parse().ok()?;
+    let d: u8 = b.trim().parse().ok()?;
+    ((1..=16).contains(&n) && matches!(d, 2 | 4 | 8 | 16)).then_some((n, d))
+}
+
+/// The playlist's time signature at `tick`: the last signature marker at or before it, else the project's (4/4 when
+/// the file has none) (§7).
+pub fn signature_at(s: &State, tick: u32) -> (u8, u8) {
+    let base = s.project.time_signature.map_or((4, 4), |(n, d)| (n.min(255) as u8, d.min(255) as u8));
+    markers(s).iter().filter(|m| m.kind == TimeMarker::SIGNATURE && m.position <= tick).max_by_key(|m| m.position).map_or(base, |m| (m.numerator, m.denominator))
+}
+
+/// Pattern `n`'s time signature: its signature marker at the start, else the project's (spec: ui/pattern-menu.md §3).
+pub fn pattern_signature(s: &State, n: u16) -> (u8, u8) {
+    let base = s.project.time_signature.map_or((4, 4), |(n, d)| (n.min(255) as u8, d.min(255) as u8));
+    s.project.pattern(n).and_then(|p| p.markers.iter().find(|m| m.kind == TimeMarker::SIGNATURE && m.position == 0)).map_or(base, |m| (m.numerator, m.denominator))
+}
+
+/// PATTERNS > Set time signature...: pattern `n` gets a signature marker at its start (replacing one there), as its
+/// piano-roll time markers are kept (spec: flp/events/patterns.md, metadata markers).
+pub fn set_pattern_signature(s: &mut State, n: u16, (num, den): (u8, u8)) {
+    let p = crate::patterns::pat_mut(s, n);
+    p.markers.retain(|m| !(m.kind == TimeMarker::SIGNATURE && m.position == 0));
+    p.markers.insert(0, TimeMarker { kind: TimeMarker::SIGNATURE, numerator: num, denominator: den, ..TimeMarker::new(0, "") });
     s.piano.dirty = true;
 }
 
@@ -3029,7 +3358,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             let sel = s.playlist.sel.clone();
             snapshot(s);
             let made: Vec<u16> = sel.iter().filter_map(|&i| make_unique(s, i)).collect();
-            if made.is_empty() { Some("Make unique: select a pattern clip".into()) } else { None }
+            if made.is_empty() { Some("Make unique: select a clip".into()) } else { None }
         }
         Cmd::InsertSpace => {
             snapshot(s);
@@ -3120,9 +3449,8 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             let pos = s.playlist.pos;
             let at = grid.map_or((600.0, 200.0), |g| (PGeom::new(s, g).x_of(pos as f32), g.y));
             if cmd == Cmd::AddSignature {
-                snapshot(s);
-                arr_mut(s).markers.push(TimeMarker { kind: TimeMarker::SIGNATURE, ..TimeMarker::new(pos, "4/4") });
-                s.piano.dirty = true;
+                // The signature in force there, to edit (§7).
+                start_edit(s, EditTarget::NewSignature(pos), at);
             } else {
                 start_edit(s, EditTarget::NewMarker(pos), at);
             }
@@ -3157,7 +3485,53 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         }
         Cmd::ClipUnique(i) => {
             snapshot(s);
-            make_unique(s, i).map(|n| format!("Made unique: pattern {n}"))
+            let pattern = matches!(clips(s).get(i).map(|c| c.source), Some(ClipSource::Pattern(_)));
+            make_unique(s, i).map(|n| if pattern { format!("Made unique: pattern {n}") } else { format!("Made unique: {}", source_name(s, ClipSource::Channel(n))) })
+        }
+        Cmd::ClipChop(i) => {
+            snapshot(s);
+            match chop(s, i) {
+                0 => {
+                    s.playlist.undo.pop();
+                    Some("Chop: the clip is too short to cut".into())
+                }
+                n => Some(format!("Chopped into {} clips", n + 1)),
+            }
+        }
+        Cmd::ClipMerge(i) => {
+            snapshot(s);
+            match merge_pattern_clips(s, i) {
+                Ok(n) => Some(format!("Merged into {}", source_name(s, ClipSource::Pattern(n)))),
+                Err(m) => {
+                    s.playlist.undo.pop();
+                    Some(m)
+                }
+            }
+        }
+        Cmd::ClipDeleteSource(i) => match clips(s).get(i).map(|c| c.source) {
+            // The pattern goes as PATTERNS > Delete deletes it, after its confirmation (spec: ui/pattern-menu.md).
+            Some(ClipSource::Pattern(n)) => {
+                s.pattern = n;
+                s.pat_ui.confirm = true;
+                None
+            }
+            // The channel goes as the channel rack deletes it, after its confirmation (spec: ui/channel-rack.md §18).
+            Some(ClipSource::Channel(ch)) => {
+                let rows: Vec<usize> = s.project.channels.iter().position(|c| c.index == ch).into_iter().collect();
+                crate::rack::ask_delete(s, rows);
+                None
+            }
+            None => None,
+        },
+        Cmd::ClipReverse(i) => {
+            let Some(ClipSource::Channel(ch)) = clips(s).get(i).map(|c| c.source) else { return None };
+            snapshot(s);
+            if reverse_automation(s, ch) {
+                None
+            } else {
+                s.playlist.undo.pop();
+                Some("Reverse: only automation clips can be reversed".into())
+            }
         }
         Cmd::ClipEditSource(i) => {
             if let Some(ClipSource::Pattern(n)) = clips(s).get(i).map(|c| c.source) {
@@ -3180,7 +3554,9 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             });
             match src {
                 Some(ClipSource::Pattern(n)) => start_edit(s, EditTarget::PatternName(n), at),
-                _ => return Some("Rename: only pattern clips can be renamed here".into()),
+                // An audio or automation clip is named after its channel.
+                Some(ClipSource::Channel(ch)) => start_edit(s, EditTarget::ChannelName(ch), at),
+                None => {}
             }
             None
         }
@@ -3327,6 +3703,16 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             }
             s.piano.dirty = true;
             None
+        }
+        Cmd::TrackLock(t) => {
+            snapshot(s);
+            let on = !track_info(s, t).is_some_and(|x| x.locked);
+            if lock_track(s, t, on) {
+                if on { Some(format!("{} locked to {}", track_name(s, t), source_name(s, track_source(s, t)))) } else { None }
+            } else {
+                s.playlist.undo.pop();
+                Some("Lock to content: the track has no clips".into())
+            }
         }
         Cmd::CreateAutomation(tgt, name, v) => {
             create_automation(s, tgt, &name, v);
@@ -3483,25 +3869,10 @@ pub fn consolidate(app: &mut App) -> String {
             t.enabled = true;
         }
     }
-    let rate = 44100;
-    let mut lib = os_engine::SampleLibrary::new(os_engine::SampleLibrary::default_factory_dir());
-    let mut e = os_engine::Engine::new(&p, &mut lib, rate, os_engine::PlayMode::Song);
-    let mut audio = e.render_all(512);
-    let want = (os_engine::laws::tick_to_frame(f64::from(b - a), p.ppq, s.tempo, rate) as usize) * 2;
-    audio.resize(want.max(2), 0.0);
-    let dir = s.path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Rendered")).unwrap_or_else(|| std::env::temp_dir().join("Lemon Studio").join("Rendered"));
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        return format!("Consolidate: {e}");
-    }
-    let n = std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) + 1;
-    let file = dir.join(format!("Consolidated {n}.wav"));
-    let written = std::fs::File::create(&file).and_then(|f| {
-        let mut w = std::io::BufWriter::new(f);
-        os_engine::wav::write_f32_stereo(&mut w, rate, &audio)
-    });
-    if let Err(e) = written {
-        return format!("Consolidate: {e}");
-    }
+    let file = match render_wav(s, &p, Some(b - a), "Consolidated") {
+        Ok(f) => f,
+        Err(e) => return format!("Consolidate: {e}"),
+    };
     let path = file.to_string_lossy().into_owned();
     let track = free_track(s, track_after_used(s), a, b);
     snapshot(s);
@@ -3521,6 +3892,94 @@ pub fn consolidate(app: &mut App) -> String {
         }
         None => format!("Consolidate: could not read back {}", file.display()),
     }
+}
+
+/// Where rendered files go: `Rendered` next to the project file, else in the temp folder.
+fn rendered_dir(s: &State) -> std::path::PathBuf {
+    s.path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Rendered")).unwrap_or_else(|| std::env::temp_dir().join("Lemon Studio").join("Rendered"))
+}
+
+/// Renders project `p` offline as the song (the engine's own instruments, 44.1 kHz float) into a new file
+/// "<stem> <k>.wav" (the lowest free k) in the rendered-files folder. `ticks`: the length the audio is cut or padded
+/// to; `None` keeps the tail up to the first quiet tick after the song (spec: audio/timing.md, "leave remainder").
+pub fn render_wav(s: &State, p: &os_model::Project, ticks: Option<u32>, stem: &str) -> Result<std::path::PathBuf, String> {
+    let rate = 44100;
+    let mut lib = os_engine::SampleLibrary::new(os_engine::SampleLibrary::default_factory_dir());
+    let mut e = os_engine::Engine::new(p, &mut lib, rate, os_engine::PlayMode::Song);
+    let mut audio = e.render_all(512);
+    if let Some(t) = ticks {
+        let want = (os_engine::laws::tick_to_frame(f64::from(t), p.ppq, s.tempo, rate) as usize) * 2;
+        audio.resize(want.max(2), 0.0);
+    }
+    let dir = rendered_dir(s);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem: String = stem.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+    for k in 1u32.. {
+        let file = dir.join(format!("{stem} {k}.wav"));
+        // A new file each time: an earlier render (or one running at the same time) keeps its own.
+        let f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&file) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut w = std::io::BufWriter::new(f);
+        os_engine::wav::write_f32_stereo(&mut w, rate, &audio).map_err(|e| e.to_string())?;
+        return Ok(file);
+    }
+    unreachable!("unbounded")
+}
+
+/// PATTERNS > Quick render as audio clip (`tail` false: cut at the pattern's end), Render as audio clip... and Render
+/// and replace... (`tail` true: the sound's tail kept): pattern `n` alone is rendered and comes back as a new audio
+/// clip channel named `name`, the current source in the picker; `replace` puts an audio clip in the place of each of
+/// the pattern's clips, playing the same part (spec: ui/pattern-menu.md §3; the render dialog's options are not
+/// built: Lemon Studio choice). Returns the message to show.
+pub fn render_pattern(s: &mut State, n: u16, tail: bool, replace: bool, name: &str) -> String {
+    if !s.project.pattern(n).is_some_and(|p| !p.notes.is_empty()) {
+        return format!("Render: {} has no notes", source_name(s, ClipSource::Pattern(n)));
+    }
+    let len = source_len(s, ClipSource::Pattern(n));
+    let mut p = s.project.clone();
+    p.tempo = Some(s.tempo);
+    if p.arrangements.is_empty() {
+        p.arrangements.push(os_flp::project::default_arrangement());
+    }
+    if let Some(arr) = p.arrangement_mut() {
+        arr.clips = vec![Clip::new(0, len, 0, ClipSource::Pattern(n))];
+        for t in &mut arr.tracks {
+            t.enabled = true;
+        }
+    }
+    let name = if name.trim().is_empty() { source_name(s, ClipSource::Pattern(n)) } else { name.trim().to_string() };
+    let file = match render_wav(s, &p, (!tail).then_some(len), &name) {
+        Ok(f) => f,
+        Err(e) => return format!("Render: {e}"),
+    };
+    let Some(ch) = add_audio_channel(s, &file.to_string_lossy()) else { return format!("Render: could not read back {}", file.display()) };
+    let unique = unique_channel_name(s, &name);
+    if let Some(c) = s.project.channels.iter_mut().find(|c| c.index == ch) {
+        c.name = Some(unique);
+    }
+    let src = ClipSource::Channel(ch);
+    s.playlist.source = Some(src);
+    s.playlist.picker = PickKind::Audio;
+    s.piano.dirty = true;
+    if !replace {
+        return format!("Rendered {} to an audio clip", source_name(s, ClipSource::Pattern(n)));
+    }
+    let idx: Vec<usize> = clips(s).iter().enumerate().filter(|(_, c)| c.source == ClipSource::Pattern(n)).map(|(i, _)| i).collect();
+    for &i in &idx {
+        let c = clips(s)[i];
+        let (w0, w1) = window(s, &c);
+        let mut a = Clip::new(c.position, c.length, c.track, src);
+        a.set_gain(1.0);
+        a.set_group(c.group());
+        a.muted = c.muted;
+        // The same part of the pattern, in the audio's milliseconds: an untrimmed audio clip would span the tail too.
+        a.window = Some((to_src(s, src, w0), to_src(s, src, w1)));
+        arr_mut(s).clips[i] = a;
+    }
+    format!("Rendered {} and replaced {} clip{}", source_name(s, ClipSource::Pattern(n)), idx.len(), if idx.len() == 1 { "" } else { "s" })
 }
 
 /// Keys while the playlist is focused. Returns true when handled.
@@ -3569,6 +4028,8 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
         Key::Character(c) if shift && !ctrl && !alt && (c == "4" || c == "$") => Cmd::ZoomAll,
         Key::Character(c) if shift && !ctrl && !alt && (c == "5" || c == "%") => Cmd::ZoomSelection,
         Key::Character(c) if shift && !ctrl && !alt && c.eq_ignore_ascii_case("g") => Cmd::GroupClips,
+        // Before the tool letters: Shift+C selects by source, C alone is the Slice tool (§5).
+        Key::Character(c) if shift && !ctrl && !alt && c.eq_ignore_ascii_case("c") => Cmd::SelectSource,
         Key::Character(c) if alt && !ctrl && (c.eq_ignore_ascii_case("g") || c.eq_ignore_ascii_case("u")) => Cmd::UngroupClips,
         Key::Named(NamedKey::End) if !ctrl && !alt => Cmd::ZoomSelection,
         Key::Named(NamedKey::Tab) if shift && !ctrl && !alt => Cmd::CycleSnap,
@@ -3596,13 +4057,7 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
             app.invalidate();
             return true;
         }
-        Key::Named(NamedKey::Enter) if ctrl => {
-            // Play from the song start.
-            app.state.song_mode = true;
-            app.state.playlist.pos = 0;
-            app.play_song_from(0);
-            return true;
-        }
+        Key::Named(NamedKey::Enter) if ctrl => Cmd::SelectTime,
         Key::Named(NamedKey::Escape) => {
             // Also closes menus and the picker (the global Escape).
             run(app, Cmd::Deselect);
@@ -3620,4 +4075,219 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
 #[cfg(test)]
 pub fn undo_len(s: &State) -> usize {
     s.playlist.undo.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{Action, Win};
+    use os_model::{Note, Pattern};
+    use os_ui::Canvas;
+    use winit::keyboard::{Key, NamedKey};
+
+    /// A project with pattern 1 (notes at steps 0, 4 and 8 of channel 0) on tracks 0 and 2, and the playlist in front.
+    fn app() -> App {
+        let mut app = App::new(None);
+        app.state.project = crate::app::test_project();
+        app.state.file = None;
+        app.state.path = None;
+        app.state.playlist.reset();
+        app.state.z = vec![Win::Playlist];
+        let ch = app.state.project.channels[0].index;
+        app.state.project.patterns = vec![Pattern { number: 1, notes: vec![Note::step(ch, 0), Note::step(ch, 96), Note::step(ch, 192)], ..Pattern::default() }];
+        arr_mut(&mut app.state).clips = vec![Clip::new(0, 384, 0, ClipSource::Pattern(1)), Clip::new(768, 384, 2, ClipSource::Pattern(1))];
+        app
+    }
+
+    /// The clip menu's entries for clip `i` that are greyed out.
+    fn greyed(s: &State, i: usize) -> Vec<String> {
+        clip_menu(s, i, 0.0, 0.0).items.iter().filter(|it| !it.enabled && !it.head && !it.sep).map(|it| it.label.to_string()).collect()
+    }
+
+    /// Shift+C selects the clips of the current source (it no longer picks the Slice tool); Ctrl+Enter selects the time
+    /// around the selection (it no longer plays from the start).
+    #[test]
+    fn select_shortcuts() {
+        let mut app = app();
+        arr_mut(&mut app.state).clips.push(Clip::new(0, 384, 1, ClipSource::Pattern(2)));
+        app.state.playlist.source = Some(ClipSource::Pattern(1));
+        app.shift = true;
+        assert!(key(&mut app, &Key::Character("C".into()), false, false));
+        assert_eq!(app.state.playlist.tool, PlTool::Draw, "Shift+C is not the Slice tool");
+        assert_eq!(app.state.playlist.sel, vec![0, 1]);
+        app.shift = false;
+        assert!(key(&mut app, &Key::Named(NamedKey::Enter), true, false));
+        assert_eq!(app.state.playlist.range, Some((0, 1152)));
+        assert!(!app.transport.playing());
+    }
+
+    /// Chop cuts a pattern clip where its notes start; an automation clip at every beat.
+    #[test]
+    fn chop_clips() {
+        let mut app = app();
+        assert!(!greyed(&app.state, 0).contains(&"Chop".to_string()));
+        assert_eq!(run(&mut app, Cmd::ClipChop(0)).as_deref(), Some("Chopped into 3 clips"));
+        let mut on0: Vec<(u32, u32, Option<(f64, f64)>)> = clips(&app.state).iter().filter(|c| c.track == 0).map(|c| (c.position, c.length, c.window)).collect();
+        on0.sort_by_key(|c| c.0);
+        assert_eq!(on0, vec![(0, 96, Some((0.0, 96.0))), (96, 96, Some((96.0, 192.0))), (192, 192, Some((192.0, 384.0)))]);
+        // An automation clip of two bars: eight beats.
+        let ch = create_automation(&mut app.state, 0, "Auto", 0.5);
+        let i = clips(&app.state).iter().position(|c| c.source == ClipSource::Channel(ch)).unwrap();
+        let len = clips(&app.state)[i].length;
+        run(&mut app, Cmd::ClipChop(i));
+        assert_eq!(clips(&app.state).iter().filter(|c| c.source == ClipSource::Channel(ch)).count(), (len / 96) as usize);
+        // One undo step brings the clip back whole.
+        run(&mut app, Cmd::Undo);
+        assert_eq!(clips(&app.state).iter().filter(|c| c.source == ClipSource::Channel(ch)).count(), 1);
+    }
+
+    /// Merge pattern clips: the selected pattern clips become one clip of a new pattern holding their notes in place.
+    #[test]
+    fn merge_pattern_clips_into_one() {
+        let mut app = app();
+        // The second clip plays only the pattern's second half.
+        arr_mut(&mut app.state).clips[1].window = Some((192.0, 384.0));
+        arr_mut(&mut app.state).clips[1].length = 192;
+        app.state.playlist.sel = vec![0, 1];
+        let m = run(&mut app, Cmd::ClipMerge(0)).unwrap();
+        assert!(m.starts_with("Merged into"), "{m}");
+        let cs = clips(&app.state);
+        assert_eq!(cs.len(), 1);
+        let ClipSource::Pattern(n) = cs[0].source else { panic!("a pattern clip") };
+        assert_eq!((cs[0].position, cs[0].length, cs[0].track), (0, 960, 0));
+        let pos: Vec<u32> = app.state.project.pattern(n).unwrap().notes.iter().map(|x| x.position).collect();
+        assert_eq!(pos, vec![0, 96, 192, 768]);
+        // One clip alone has nothing to merge with.
+        let mut app = super::tests::app();
+        assert_eq!(run(&mut app, Cmd::ClipMerge(0)).as_deref(), Some("Merge pattern clips: select two or more pattern clips"));
+        assert_eq!(clips(&app.state).len(), 2);
+    }
+
+    /// Make unique and Rename work on audio and automation clips: a copy of the channel (and its automation), the
+    /// channel's name.
+    #[test]
+    fn unique_and_rename_channel_clips() {
+        let mut app = app();
+        let ch = create_automation(&mut app.state, 0, "Auto", 0.5);
+        let i = clips(&app.state).iter().position(|c| c.source == ClipSource::Channel(ch)).unwrap();
+        assert!(greyed(&app.state, i).is_empty() || !greyed(&app.state, i).contains(&"Make unique".to_string()));
+        let n = app.state.project.channels.len();
+        let m = run(&mut app, Cmd::ClipUnique(i)).unwrap();
+        assert_eq!(m, "Made unique: Auto #2");
+        let copy = app.state.project.channels[n].index;
+        assert_eq!(clips(&app.state)[i].source, ClipSource::Channel(copy));
+        assert_eq!(app.state.project.automation(copy).map(|a| a.points.len()), Some(2));
+        assert_eq!(source_kind(&app.state, ClipSource::Channel(copy)), PickKind::Automation);
+        // Rename: the channel's name.
+        assert_eq!(run(&mut app, Cmd::ClipRename(i)), None);
+        assert_eq!(app.state.playlist.edit.as_ref().map(|e| e.target), Some(EditTarget::ChannelName(copy)));
+        app.state.playlist.edit.as_mut().unwrap().text = "Filter sweep".into();
+        commit_edit(&mut app.state);
+        assert_eq!(source_name(&app.state, ClipSource::Channel(copy)), "Filter sweep");
+    }
+
+    /// Reverse plays an automation clip's curve backwards; Delete source asks before the pattern or channel goes.
+    #[test]
+    fn reverse_and_delete_source() {
+        let mut app = app();
+        let ch = create_automation(&mut app.state, 0, "Auto", 0.5);
+        let a = app.state.project.automation_mut(ch).unwrap();
+        a.points[0].value = 0.0;
+        a.points[1].value = 1.0;
+        a.points[1].tension = 0.5;
+        let i = clips(&app.state).iter().position(|c| c.source == ClipSource::Channel(ch)).unwrap();
+        assert!(!greyed(&app.state, i).contains(&"Reverse".to_string()));
+        run(&mut app, Cmd::ClipReverse(i));
+        let p = &app.state.project.automation(ch).unwrap().points;
+        assert_eq!((p[0].value, p[1].value, p[1].tension), (1.0, 0.0, -0.5));
+        // Delete source of a pattern clip: the pattern delete confirmation, for that pattern.
+        run(&mut app, Cmd::ClipDeleteSource(0));
+        assert!(app.state.pat_ui.confirm && app.state.pattern == 1);
+        crate::patterns::hit(&mut app.state, crate::patterns::Hit::ConfirmOk);
+        assert!(clips(&app.state).iter().all(|c| !matches!(c.source, ClipSource::Pattern(_))));
+        // Of an automation clip: the channel rack's delete confirmation for its row.
+        let i = clips(&app.state).iter().position(|c| c.source == ClipSource::Channel(ch)).unwrap();
+        run(&mut app, Cmd::ClipDeleteSource(i));
+        let row = app.state.project.channels.iter().position(|c| c.index == ch).unwrap();
+        assert_eq!(app.state.rack.pending_delete, Some(vec![row]));
+    }
+
+    /// Add time signature change... opens a box with the signature in force; Enter adds that marker (not always 4/4).
+    #[test]
+    fn signature_dialog() {
+        let mut app = app();
+        assert_eq!(parse_signature(" 7 / 8"), Some((7, 8)));
+        assert_eq!(parse_signature("7/9"), None);
+        assert_eq!(parse_signature("0/4"), None);
+        app.state.playlist.pos = 384;
+        run(&mut app, Cmd::AddSignature);
+        assert_eq!(app.state.playlist.edit.as_ref().map(|e| (e.target, e.text.as_str())), Some((EditTarget::NewSignature(384), "4/4")));
+        app.state.playlist.edit.as_mut().unwrap().text = "7/8".into();
+        key(&mut app, &Key::Named(NamedKey::Enter), false, false);
+        let m = markers(&app.state).last().cloned().unwrap();
+        assert_eq!((m.position, m.kind, m.numerator, m.denominator, m.name.as_str()), (384, TimeMarker::SIGNATURE, 7, 8, ""));
+        assert_eq!(signature_at(&app.state, 500), (7, 8));
+        // A bad entry adds nothing and says what the box takes.
+        run(&mut app, Cmd::AddSignature);
+        app.state.playlist.edit.as_mut().unwrap().text = "seven".into();
+        commit_edit(&mut app.state);
+        assert_eq!(markers(&app.state).len(), 1);
+        assert_eq!(app.state.message.as_deref(), Some(SIGNATURE_HELP));
+    }
+
+    /// A click on a time marker jumps the song position there; dragging it moves it by the mouse's distance.
+    #[test]
+    fn marker_click_jumps_the_song_position() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut app = app();
+        arr_mut(&mut app.state).markers.push(TimeMarker::new(768, "Chorus"));
+        app.paint(&mut c, None);
+        let grid = app.pl_grid().expect("playlist grid");
+        let g = PGeom::new(&app.state, grid);
+        let lane = app.hits.iter().rev().find(|h| h.action == Action::PlMarkers).map(|h| h.rect).expect("marker lane");
+        let (x, y) = (g.x_of(768.0) + 8.0, lane.cy());
+        app.mouse_move(x, y);
+        app.mouse_down();
+        app.mouse_up();
+        assert_eq!((app.state.playlist.pos, markers(&app.state)[0].position), (768, 768));
+        assert!(app.state.song_mode);
+        assert_eq!(undo_len(&app.state), 0, "a click leaves no undo step");
+        // A drag of two bars moves the marker two bars.
+        app.paint(&mut c, None);
+        app.mouse_move(x, y);
+        app.mouse_down();
+        for k in 1..=4 {
+            app.mouse_move(x + g.bar_w * 0.5 * k as f32, y);
+        }
+        app.mouse_up();
+        assert_eq!(markers(&app.state)[0].position, 768 + 2 * 384);
+    }
+
+    /// The track-header strip's "+" and NOTE / CHAN / PAT have hit areas: the filters pick the picker's list, "+" adds
+    /// a pattern; none is a placeholder.
+    #[test]
+    fn header_strip_controls() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut app = app();
+        app.paint(&mut c, None);
+        let grid = app.pl_grid().expect("playlist grid");
+        let strip = Rect::new(grid.x - 118.0, grid.y - 44.0, 120.0, 44.0);
+        let in_strip: Vec<Action> = app.hits.iter().filter(|h| strip.contains(h.rect.cx(), h.rect.cy())).map(|h| h.action.clone()).collect();
+        assert!(in_strip.iter().all(|a| !matches!(a, Action::Placeholder(_))), "{in_strip:?}");
+        let rect = |app: &App, a: &Action| app.hits.iter().find(|h| &h.action == a && strip.contains(h.rect.cx(), h.rect.cy())).map(|h| h.rect).unwrap_or_else(|| panic!("{a:?}"));
+        let tap = |app: &mut App, c: &mut Canvas, r: Rect| {
+            app.mouse_move(r.cx(), r.cy());
+            app.mouse_down();
+            app.mouse_up();
+            app.paint(c, None);
+        };
+        for kind in [PickKind::Audio, PickKind::Automation, PickKind::Pattern] {
+            let r = rect(&app, &Action::PlPickTab(kind));
+            tap(&mut app, &mut c, r);
+            assert_eq!(app.state.playlist.picker, kind);
+        }
+        let r = rect(&app, &Action::PlPickAdd);
+        tap(&mut app, &mut c, r);
+        assert!(matches!(app.state.pat_ui.name_box.as_ref().map(|b| b.target), Some(crate::patterns::BoxTarget::Name(2))));
+    }
 }

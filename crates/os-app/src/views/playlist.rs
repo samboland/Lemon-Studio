@@ -123,18 +123,26 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let pick = Rect::new(r.x, client.y, 160.0, client.h);
     ui.part(Seg::PlPicker, pick, |ui| picker(ui, s, pick));
 
-    // Track-header strip: add button and the NOTE / CHAN / PAT filters.
+    // Track-header strip: add button and the NOTE / CHAN / PAT filters. Lemon Studio's meaning: "+" adds a pattern as
+    // the picker's "+" does (find first empty, named), and the filters pick the kind of clip the picker lists, lit as
+    // its tabs are (audio clips, automation clips, patterns).
     let strip = Rect::new(r.x + 162.0, client.y + 1.0, 108.0, 38.0);
     if super::lemon(ui) {
         ui.c.fill_rrect(strip, lk::r_btn(t), t.track_header);
     } else {
         ui.c.fill_rect_gradient(strip, t.track_header.shade(0.05), t.track_header.shade(-0.03), 0.0);
     }
-    icons::draw(ui.c, Icon::Plus, Rect::new(strip.x + 6.0, client.y + 20.0, 16.0, 16.0), t.glyph);
-    for (i, (icon, label)) in [(Icon::Wave, "NOTE"), (Icon::Slide, "CHAN"), (Icon::PianoRoll, "PAT")].into_iter().enumerate() {
+    let plus = Rect::new(strip.x + 6.0, client.y + 20.0, 16.0, 16.0);
+    let hov = ui.hit(plus.outset(2.0), Action::PlPickAdd, "Add a pattern (find first empty)");
+    icons::draw(ui.c, Icon::Plus, plus, if hov { t.text } else { t.glyph });
+    let filters = [(Icon::Wave, "NOTE", PickKind::Audio, "Audio clips"), (Icon::Slide, "CHAN", PickKind::Automation, "Automation clips"), (Icon::PianoRoll, "PAT", PickKind::Pattern, "Patterns")];
+    for (i, (icon, label, kind, hint)) in filters.into_iter().enumerate() {
         let cx = strip.x + 45.0 + 26.0 * i as f32;
-        icons::draw(ui.c, icon, Rect::new(cx - 8.0, client.y + 3.0, 16.0, 16.0), if i == 2 { t.glyph } else { t.text_faint });
-        ui.c.text_center(Font::condensed(8, 4).bold(), Rect::new(cx - 14.0, client.y + 25.0, 28.0, 10.0), if i == 2 { t.glyph } else { t.text_faint }, label);
+        let hov = ui.hit(Rect::new(cx - 13.0, client.y + 2.0, 26.0, 34.0), Action::PlPickTab(kind), format!("Picker: {}", hint.to_lowercase()));
+        let on = s.playlist.picker == kind;
+        let ink = if on { t.glyph } else if hov { t.text } else { t.text_faint };
+        icons::draw(ui.c, icon, Rect::new(cx - 8.0, client.y + 3.0, 16.0, 16.0), ink);
+        ui.c.text_center(Font::condensed(8, 4).bold(), Rect::new(cx - 14.0, client.y + 25.0, 28.0, 10.0), ink, label);
     }
 
     // Arrangement geometry.
@@ -1063,8 +1071,8 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
             ui.c.fill_polygon(&[(cx - 4.5, cy + 2.5), (cx + 4.5, cy + 2.5), (cx, cy - 2.5)], col);
         }
     }
-    if lead && info.is_some_and(|i| i.locked) {
-        // FL draws a lock where the LED is on such a group (§6a).
+    if info.is_some_and(|i| i.locked) {
+        // FL draws a lock where the LED is on a locked track (§6a; Lemon Studio: on every track locked to its content).
         let (cx, cy) = (led.cx(), led.cy() + 1.0);
         let green = t.led(0xa0dd48);
         ui.c.fill_rrect(Rect::new(cx - 5.0, cy - 2.0, 10.0, 8.0), 1.5, green);
@@ -1109,6 +1117,20 @@ pub fn paint_overlays(ui: &mut Ui, s: &State) {
     if let Some(e) = &s.playlist.edit {
         let t = ui.t;
         let r = Rect::new(e.at.0, e.at.1, 150.0, 20.0);
+        // Boxes that are dialogs say what they take, above the box.
+        let caption = match e.target {
+            pl::EditTarget::NewSignature(_) | pl::EditTarget::PatternSignature(_) => Some("Time signature (beats / note value)"),
+            pl::EditTarget::RenderPattern(_, false) => Some("Audio clip name - Enter renders"),
+            pl::EditTarget::RenderPattern(_, true) => Some("Audio clip name - Enter renders and replaces"),
+            _ => None,
+        };
+        if let Some(cap) = caption {
+            let f = Font::new(12);
+            let w = ui.c.text_width(f, cap) + 8.0;
+            let cr = Rect::new(r.x, r.y - 17.0, w.max(r.w), 17.0);
+            ui.c.fill_rect(cr, ui.t.s(0x0e1214));
+            ui.c.text(f, cr.x + 4.0, cr.y + 1.0, t.text_faint, cap);
+        }
         ui.hit(r, Action::Swallow, "Type, Enter accepts, Esc cancels");
         ui.c.fill_rect(r, ui.t.s(0x0e1214));
         ui.c.stroke_rrect(r, 0.0, 1.0, t.glyph);
