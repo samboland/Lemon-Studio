@@ -5759,7 +5759,7 @@ pub fn theme_from_file(path: &std::path::Path) -> Result<Theme, String> {
 }
 
 /// The theme: the saved design's (spec: ui/lemon-design.md); for Classic `theme.txt` in the user folder
-/// (`os_paths::user_dir`), else the last imported `current.flstheme`, else the default.
+/// (`os_paths::user_dir`), else the last imported `current.flstheme`, else FL's current theme, else the default.
 fn load_theme() -> Theme {
     let t = design_theme(saved_design(), true);
     os_theme::set_current(&t.colors);
@@ -5779,15 +5779,43 @@ pub fn move_old_settings() {
     }
 }
 
-/// The design named in `design.txt` in the user folder; Lemon when there is none. Tests always use Classic.
+/// The saved design, else Classic when a saved or current FL theme is available, else Lemon.
+/// Tests always use Classic.
 pub fn saved_design() -> Design {
     if cfg!(test) {
         return Design::Classic;
     }
-    os_paths::user_file("design.txt")
-        .and_then(|f| std::fs::read_to_string(f).ok())
-        .and_then(|t| Design::parse(&t))
-        .unwrap_or(Design::Lemon)
+    let dir = os_paths::user_dir();
+    let fl = current_fl_theme_path();
+    initial_design(dir.as_deref(), fl.as_deref())
+}
+
+fn current_fl_theme_path() -> Option<PathBuf> {
+    crate::browser::documents_dir().map(|dir| dir.join("Image-Line/FL Studio/Settings/Themes/__current.flstheme"))
+}
+
+/// A usable detected theme must contain a numeric surface adjustment; an empty file is not a theme.
+fn detected_fl_theme(path: Option<&std::path::Path>) -> Option<Theme> {
+    let path = path?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let has_surface = text.trim_start_matches('\u{feff}').lines().any(|line| {
+        line.split_once('=').is_some_and(|(key, value)| {
+            matches!(key.trim().to_ascii_lowercase().as_str(), "hue" | "saturation" | "lightness" | "contrast")
+                && value.trim().parse::<f32>().is_ok_and(|number| number.is_finite())
+        })
+    });
+    has_surface.then(|| theme_from_file(path).ok()).flatten()
+}
+
+fn initial_design(dir: Option<&std::path::Path>, fl: Option<&std::path::Path>) -> Design {
+    if let Some(design) = dir.and_then(|dir| std::fs::read_to_string(dir.join("design.txt")).ok()).and_then(|text| Design::parse(&text)) {
+        return design;
+    }
+    if dir.is_some_and(|dir| ["theme.txt", "current.flstheme"].iter().any(|file| dir.join(file).is_file())) || detected_fl_theme(fl).is_some() {
+        Design::Classic
+    } else {
+        Design::Lemon
+    }
 }
 
 fn save_design(d: Design) {
@@ -5813,22 +5841,73 @@ fn load_theme_inner() -> Theme {
     if cfg!(test) {
         return Theme::default();
     }
-    let Some(dir) = os_paths::user_dir() else { return Theme::default() };
-    for f in ["theme.txt", "current.flstheme"] {
-        let p = dir.join(f);
-        if p.exists() {
-            match theme_from_file(&p) {
-                Ok(t) => return t,
-                Err(e) => eprintln!("theme {f}: {e}; using the default"),
+    let dir = os_paths::user_dir();
+    let fl = current_fl_theme_path();
+    classic_theme(dir.as_deref(), fl.as_deref())
+}
+
+fn classic_theme(dir: Option<&std::path::Path>, fl: Option<&std::path::Path>) -> Theme {
+    if let Some(dir) = dir {
+        for f in ["theme.txt", "current.flstheme"] {
+            let p = dir.join(f);
+            if p.exists() {
+                match theme_from_file(&p) {
+                    Ok(t) => return t,
+                    Err(e) => eprintln!("theme {f}: {e}; trying the next theme"),
+                }
             }
         }
     }
-    Theme::default()
+    detected_fl_theme(fl).unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_auto_default_uses_current_fl_and_handles_missing_files() {
+        let dir = std::env::temp_dir().join(format!("os_theme_auto_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("__current.flstheme");
+        assert_eq!(initial_design(None, Some(&path)), Design::Lemon);
+        assert_eq!(classic_theme(None, Some(&path)), Theme::default());
+        let text = "Hue=-34\nSaturation=-207\nLightness=-83\nContrast=13\nText=255\nSelected=1261774\n";
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(initial_design(None, Some(&path)), Design::Classic);
+        assert_eq!(classic_theme(None, Some(&path)), theme_from_file(&path).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "detection never changes FL's theme");
+        std::fs::write(&path, "not a theme\nHue=NaN\n").unwrap();
+        assert_eq!(initial_design(None, Some(&path)), Design::Lemon);
+        assert_eq!(classic_theme(None, Some(&path)), Theme::default());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn theme_auto_default_respects_saved_design_and_imported_theme() {
+        let dir = std::env::temp_dir().join(format!("os_theme_saved_{}", std::process::id()));
+        let local = dir.join("Lemon Studio");
+        std::fs::create_dir_all(&local).unwrap();
+        let fl = dir.join("__current.flstheme");
+        std::fs::write(&fl, "Hue=30\nLightness=-80\n").unwrap();
+        let design = local.join("design.txt");
+        std::fs::write(&design, "Lemon").unwrap();
+        assert_eq!(initial_design(Some(&local), Some(&fl)), Design::Lemon);
+        std::fs::write(&design, "Classic").unwrap();
+        assert_eq!(initial_design(Some(&local), Some(&fl)), Design::Classic);
+        assert_eq!(classic_theme(Some(&local), Some(&fl)), theme_from_file(&fl).unwrap());
+        let saved = local.join("current.flstheme");
+        std::fs::write(&saved, "Hue=-90\nLightness=-153\n").unwrap();
+        assert_eq!(classic_theme(Some(&local), Some(&fl)), theme_from_file(&saved).unwrap());
+        std::fs::remove_file(design).unwrap();
+        assert_eq!(initial_design(Some(&local), None), Design::Classic);
+        assert_eq!(classic_theme(Some(&local), None), theme_from_file(&saved).unwrap());
+        std::fs::remove_file(saved).unwrap();
+        std::fs::remove_file(fl).unwrap();
+        std::fs::remove_dir(local).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     fn frame(app: &mut App, c: &mut Canvas, damage: Option<Rect>) {
         app.paint(c, damage);

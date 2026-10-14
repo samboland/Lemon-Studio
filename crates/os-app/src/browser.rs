@@ -390,7 +390,7 @@ fn initial_folders(saved: Option<&str>, documents: Option<&std::path::Path>) -> 
 
 /// Ask Windows for Documents so OneDrive and other redirected folders work.
 #[cfg(windows)]
-fn documents_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn documents_dir() -> Option<std::path::PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_Documents};
@@ -416,7 +416,7 @@ fn documents_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn documents_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn documents_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join("Documents"))
 }
 
