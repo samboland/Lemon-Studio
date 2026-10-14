@@ -659,6 +659,8 @@ pub enum Drag {
     /// Change a channel's mixer track (spec: ui/channel-rack.md §5).
     RackMixer { ch: usize, y0: f32, v0: u16 },
     Fader { track: u16, y0: f32, v0: f64 },
+    /// A mixer effect slot pressed (spec: ui/mixer.md §7): dragging moves it between slots; `moved` once it did.
+    MixSlot { track: u16, slot: u8, y0: f32, moved: bool },
     Tempo { y0: f32, t0: f64 },
     /// The song position slider's handle (`dx` = grab offset from its centre), or the button held on its track (the
     /// next step is due at `next`) (spec: ui/song-position-slider.md §3).
@@ -2889,7 +2891,7 @@ impl App {
                 (target::mixer(t, target::MIXER_VOLUME), format!("{} - Volume", mix_name(t)), v)
             }
             Action::Tempo => (target::TEMPO, "Tempo".into(), crate::playlist::tempo_value(s.tempo)),
-            _ => return None,
+            _ => return crate::mixer::automation_target(s, a),
         })
     }
 
@@ -3027,7 +3029,7 @@ impl App {
                     self.state.pattern = (i32::from(p0) + steps).clamp(1, i32::from(crate::patterns::MAX)) as u16;
                     self.invalidate();
                 }
-                d @ Drag::Fader { .. } => crate::mixer::drag_move(self, d, x, y),
+                d @ (Drag::Fader { .. } | Drag::MixSlot { .. }) => crate::mixer::drag_move(self, d, x, y),
                 Drag::Knob { id, y0, v0 } => {
                     self.state.set_knob(id, v0 - (y - y0) * id.drag_rate());
                     self.hint = Cow::Owned(self.state.knob_text(id));
@@ -3563,6 +3565,7 @@ impl App {
             Some(Drag::ZoomBox { x0, y0 }) => self.zoom_to(x0, y0),
             Some(Drag::SongPos { .. }) => self.song_pos_release(),
             Some(Drag::PianoSplit { .. }) => crate::piano_split::save(self.state.piano.split),
+            Some(d @ Drag::MixSlot { .. }) => crate::mixer::drag_end(self, d),
             Some(Drag::Marker) if self.transport.playing() && !self.transport.song() => {
                 self.start_playback();
             }

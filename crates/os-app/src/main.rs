@@ -35,6 +35,7 @@ mod meters;
 mod metronome;
 mod midi_in;
 mod mixer;
+mod mixer_states;
 mod osc3;
 mod monitor;
 mod params;
