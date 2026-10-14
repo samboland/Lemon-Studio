@@ -2,6 +2,12 @@
 //! taps as a whole number of BPM, written to the project tempo while Apply tempo is on. The counting is here, free of
 //! any clock (taps are times in seconds); the window is `views/tapper.rs`. Apply tempo, Sync and Mute are program
 //! settings, not part of the project: kept in the user folder (`tapper.txt`).
+//!
+//! During playback (§6-7): the nudge buttons move the playing position a little earlier or later, to line the music up
+//! with the taps; Sync puts the position on the nearest beat at every tap; Mute silences the output during the first
+//! taps of a count, and "now" for two bars. Lemon Studio choices: FL's nudge speeds playback up or slows it down while
+//! held; Lemon's moves it by a fixed step per click (`NUDGE_DIV`). Muting lasts until the fourth tap of a count (one
+//! bar of taps) or until the count stops (`FIRST_GAP` without a tap).
 // spec: ui/tempo-tapper.md
 
 use std::sync::{Mutex, OnceLock};
@@ -20,6 +26,12 @@ pub const BAR_X1: f32 = 151.0;
 pub const FLASH_SECS: f32 = 0.25;
 /// MIDI keys pressed this close together (a chord) are one tap: no one taps faster (1000 BPM).
 pub const MIDI_CHORD: f64 = 0.06;
+/// A nudge moves the playing position by a beat / this (Lemon Studio choice).
+pub const NUDGE_DIV: u16 = 16;
+/// Mute silences the first taps of a count, up to this one (Lemon Studio choice).
+pub const MUTE_TAPS: usize = 4;
+/// "now" mutes for this many bars of 4 beats (Lemon Studio choice).
+pub const NOW_BARS: f64 = 2.0;
 
 /// One count of taps: when it started, its latest tap and how many taps it has (§2).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -49,7 +61,6 @@ impl Tapper {
     }
 
     /// Taps in the current count (0 before the first).
-    #[cfg(test)]
     pub fn taps(&self) -> usize {
         self.taps
     }
@@ -82,13 +93,38 @@ impl Tapper {
     }
 }
 
-/// What the window's working controls do (Sync, Mute, now and the nudge buttons are not available yet).
+/// The playing position after a nudge from `tick` (`ppq` per beat): `dir` < 0 earlier, > 0 later, by a beat /
+/// `NUDGE_DIV` (at least a tick), never before the start.
+pub fn nudged(tick: u32, ppq: u16, dir: i8) -> u32 {
+    let step = u32::from((ppq / NUDGE_DIV).max(1));
+    if dir < 0 { tick.saturating_sub(step) } else { tick + step }
+}
+
+/// Sync (§7): the beat nearest to `tick`.
+pub fn nearest_beat(tick: f64, ppq: u16) -> u32 {
+    let ppq = f64::from(ppq.max(1));
+    ((tick.max(0.0) / ppq).round() * ppq) as u32
+}
+
+/// How long "now" mutes at `tempo` BPM, in seconds.
+pub fn now_secs(tempo: f64) -> f64 {
+    NOW_BARS * 4.0 * 60.0 / tempo.max(1.0)
+}
+
+/// What the window's controls do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TapAct {
     /// The pad: a tap on press.
     Pad,
     /// The Apply tempo switch.
     Apply,
+    /// The nudge buttons: -1 earlier, 1 later.
+    Nudge(i8),
+    /// The Sync and Mute switches.
+    Sync,
+    Mute,
+    /// "now": mute for a few bars.
+    Now,
 }
 
 /// The window's state: where it is (centred over the main window the first time in a run, not saved), the count and
@@ -101,6 +137,11 @@ pub struct TapperUi {
     /// When the last tap lit the pad, while its flash fades, and how lit it is (1 at the tap, 0 when gone).
     pub flash_at: Option<Instant>,
     pub flash: f32,
+    /// Muting (Mute, now) ends at this time on the tapper's clock; `tap_mute`: it was the first taps' (Mute) that
+    /// started it; `muted`: playback hears the muted output.
+    pub mute_until: Option<f64>,
+    pub tap_mute: bool,
+    pub muted: bool,
     /// The tapper's clock: taps are seconds since this.
     epoch: Instant,
     /// Tests tap at times of their own.
@@ -109,6 +150,9 @@ pub struct TapperUi {
     /// Tests record the taps' clicks (accented or not) instead of opening an audio device.
     #[cfg(test)]
     pub test_clicks: Vec<bool>,
+    /// Tests play without an audio device: true = the tapper acts as during playback.
+    #[cfg(test)]
+    pub test_playing: bool,
 }
 
 impl Default for TapperUi {
@@ -119,11 +163,16 @@ impl Default for TapperUi {
             count: Tapper::default(),
             flash_at: None,
             flash: 0.0,
+            mute_until: None,
+            tap_mute: false,
+            muted: false,
             epoch: Instant::now(),
             #[cfg(test)]
             test_time: None,
             #[cfg(test)]
             test_clicks: Vec::new(),
+            #[cfg(test)]
+            test_playing: false,
         }
     }
 }
@@ -159,7 +208,7 @@ impl TapperUi {
 pub struct Settings {
     /// New tempos set the project tempo.
     pub apply: bool,
-    /// Kept for when Sync and Mute work.
+    /// During playback: each tap puts the position on the nearest beat (§7); the first taps of a count are muted (§7).
     pub sync: bool,
     pub mute: bool,
 }
@@ -213,6 +262,22 @@ pub fn toggle_apply() -> bool {
     })
 }
 
+/// Toggles Sync and keeps it; returns the new state.
+pub fn toggle_sync() -> bool {
+    with(|s| {
+        s.sync = !s.sync;
+        s.sync
+    })
+}
+
+/// Toggles Mute and keeps it; returns the new state.
+pub fn toggle_mute() -> bool {
+    with(|s| {
+        s.mute = !s.mute;
+        s.mute
+    })
+}
+
 /// `key=value` lines: `apply` (missing: 1), `sync` and `mute` (missing: 0), each 0 / 1; anything else is ignored.
 pub fn parse(text: &str) -> Settings {
     let mut s = Settings::default();
@@ -243,6 +308,111 @@ fn save(s: &Settings) {
     if let Some(dir) = os_paths::user_dir() {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join("tapper.txt"), text(s));
+    }
+}
+
+// ---------------------------------------------------------------- during playback (spec §6, §7)
+
+impl crate::app::App {
+    /// Whether the tapper's playback controls act: something plays (and is not paused).
+    fn tapper_playing(&self) -> bool {
+        #[cfg(test)]
+        if self.state.tapper.test_playing {
+            return true;
+        }
+        self.transport.playing() && !self.transport.paused()
+    }
+
+    /// The nudge buttons, Sync, Mute and now (`App::tapper_act` handles the pad and Apply tempo). Sync, Mute and now
+    /// need Apply tempo, as in FL (§5).
+    pub(crate) fn tapper_more(&mut self, a: TapAct) {
+        let apply = get().apply;
+        let msg = match a {
+            TapAct::Pad | TapAct::Apply => None,
+            TapAct::Nudge(_) if !self.tapper_playing() => Some("Nudging moves the song while it plays".to_string()),
+            TapAct::Nudge(dir) => {
+                let ppq = self.state.project.ppq.max(1);
+                let to = nudged(self.transport.tick().max(0.0) as u32, ppq, dir);
+                self.set_song_pos(to, true);
+                None
+            }
+            TapAct::Sync | TapAct::Mute | TapAct::Now if !apply => Some("Turn Apply tempo on first".to_string()),
+            TapAct::Sync => Some(if toggle_sync() { "Sync on: each tap puts the song on the beat" } else { "Sync off" }.to_string()),
+            TapAct::Mute => {
+                let on = toggle_mute();
+                if !on && self.state.tapper.tap_mute {
+                    self.state.tapper.mute_until = None;
+                }
+                Some(if on { "Mute on: the first taps of a count are silent while playing" } else { "Mute off" }.to_string())
+            }
+            TapAct::Now if !self.tapper_playing() => Some("Mute now silences the song while it plays".to_string()),
+            TapAct::Now => {
+                let tp = &mut self.state.tapper;
+                tp.mute_until = Some(tp.clock() + now_secs(self.state.tempo));
+                tp.tap_mute = false;
+                None
+            }
+        };
+        if msg.is_some() {
+            self.state.message = msg;
+            self.invalidate();
+        }
+    }
+
+    /// After every tap (`App::tap`): with Apply tempo on and something playing, Sync puts the song on the nearest beat
+    /// and Mute silences the first taps of a count (§7).
+    pub(crate) fn tapper_tapped(&mut self) {
+        let set = get();
+        if !set.apply || !self.tapper_playing() {
+            return;
+        }
+        let tp = &mut self.state.tapper;
+        let taps = tp.count.taps();
+        if set.mute && taps < MUTE_TAPS {
+            // Until the next tap is due at the latest (a count stops after `FIRST_GAP` without one).
+            let until = tp.clock() + FIRST_GAP;
+            tp.mute_until = Some(tp.mute_until.map_or(until, |u| u.max(until)));
+            tp.tap_mute = true;
+        } else if tp.tap_mute {
+            tp.mute_until = None;
+            tp.tap_mute = false;
+        }
+        if set.sync {
+            // Already on the beat (within a nudge): left alone, a jump would only click.
+            let (now, ppq) = (self.transport.tick(), self.state.project.ppq);
+            let beat = nearest_beat(now, ppq);
+            if (f64::from(beat) - now).abs() >= f64::from((ppq / NUDGE_DIV).max(1)) {
+                self.set_song_pos(beat, true);
+            }
+        }
+    }
+
+    /// Every UI tick: the pad's flash fades (§4, §8); muting starts and ends (playback hears the project with the main
+    /// volume at zero, also after edits, until the mute is over or playback stops).
+    pub(crate) fn tapper_tick(&mut self, now: Instant) {
+        use crate::app::Win;
+        if self.state.tapper.fade(now) && self.state.shown(Win::Tapper) {
+            self.damage_rect(crate::views::tapper::pad_rect(&self.state));
+        }
+        let playing = self.tapper_playing();
+        let tp = &mut self.state.tapper;
+        let clock = tp.clock();
+        if !playing || tp.mute_until.is_some_and(|u| clock >= u) {
+            tp.mute_until = None;
+            tp.tap_mute = false;
+        }
+        let want = tp.mute_until.is_some();
+        if want != tp.muted || (want && self.state.piano.dirty) {
+            self.state.tapper.muted = want;
+            let mut p = crate::rack::play_project(&self.state);
+            if want {
+                p.main_volume = Some(0);
+                // This tick's edits reach playback muted (the app's own update would unmute it).
+                self.state.piano.dirty = false;
+            }
+            self.transport.update(&p);
+            self.damage_win(Win::Tapper);
+        }
     }
 }
 
@@ -346,6 +516,101 @@ mod tests {
         assert!(ui.fade(t0 + std::time::Duration::from_millis(260)));
         assert_eq!((ui.flash, ui.flash_at), (0.0, None));
         assert!(!ui.fade(t0 + std::time::Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn nudge_beat_and_mute_lengths() {
+        assert_eq!(nudged(100, 96, 1), 106);
+        assert_eq!(nudged(100, 96, -1), 94);
+        assert_eq!(nudged(3, 96, -1), 0, "never before the start");
+        assert_eq!(nudged(10, 8, 1), 11, "at least a tick");
+        assert_eq!(nearest_beat(140.0, 96), 96);
+        assert_eq!(nearest_beat(150.0, 96), 192);
+        assert_eq!(nearest_beat(-5.0, 96), 0);
+        assert!((now_secs(120.0) - 4.0).abs() < 1e-9, "two bars at 120 BPM");
+    }
+
+    /// spec §6-7: the nudge buttons, Sync, Mute and now work (no longer greyed out); during playback (tests:
+    /// `test_playing`) nudging moves the position, now mutes for two bars and Mute the first taps of a count; with Apply
+    /// tempo off Sync, Mute and now only say so.
+    #[test]
+    fn playback_controls() {
+        use crate::app::{Action, App, Win};
+        let Ok(mut c) = os_ui::Canvas::new(1920, 1080, 1.0) else { return };
+        let mut app = App::new(None);
+        app.act(Action::ToggleWin(Win::Tapper));
+        app.paint(&mut c, None);
+        for a in [TapAct::Nudge(-1), TapAct::Nudge(1), TapAct::Sync, TapAct::Mute, TapAct::Now] {
+            assert!(app.hits.iter().any(|h| h.action == Action::Tapper(a)), "{a:?} works");
+        }
+        // Not playing: they say so.
+        app.act(Action::Tapper(TapAct::Nudge(1)));
+        assert!(app.state.message.as_deref().is_some_and(|m| m.contains("while it plays")));
+        app.act(Action::Tapper(TapAct::Now));
+        assert_eq!(app.state.tapper.mute_until, None);
+        // Sync and Mute are switches, kept.
+        app.act(Action::Tapper(TapAct::Sync));
+        assert!(get().sync);
+        app.act(Action::Tapper(TapAct::Sync));
+        assert!(!get().sync);
+
+        // Nudge during playback (PAT mode: the play-start marker moves).
+        app.state.song_mode = false;
+        app.state.tapper.test_playing = true;
+        app.act(Action::Tapper(TapAct::Nudge(1)));
+        let range = crate::song_pos::range(&app.state).unwrap();
+        assert_eq!(app.state.piano.marker, u32::from(app.state.project.ppq / NUDGE_DIV).min(range - 1));
+        app.act(Action::Tapper(TapAct::Nudge(-1)));
+        assert_eq!(app.state.piano.marker, 0);
+
+        // now: two bars muted, then the song is heard again.
+        app.state.tempo = 120.0;
+        app.state.tapper.test_time = Some(10.0);
+        app.act(Action::Tapper(TapAct::Now));
+        assert_eq!(app.state.tapper.mute_until, Some(14.0));
+        app.tapper_tick(Instant::now());
+        assert!(app.state.tapper.muted);
+        app.state.tapper.test_time = Some(14.5);
+        app.tapper_tick(Instant::now());
+        assert!(!app.state.tapper.muted && app.state.tapper.mute_until.is_none());
+
+        // Mute: the first three taps of a count are silent, the fourth ends it.
+        app.act(Action::Tapper(TapAct::Mute));
+        assert!(get().mute);
+        for t in [20.0, 20.5, 21.0] {
+            app.state.tapper.test_time = Some(t);
+            app.act(Action::Tapper(TapAct::Pad));
+            app.tapper_tick(Instant::now());
+            assert!(app.state.tapper.muted, "tap at {t}");
+        }
+        app.state.tapper.test_time = Some(21.5);
+        app.act(Action::Tapper(TapAct::Pad));
+        app.tapper_tick(Instant::now());
+        assert!(!app.state.tapper.muted);
+        // A count that stops (no tap for 2 s) ends its mute too.
+        app.state.tapper.test_time = Some(30.0);
+        app.act(Action::Tapper(TapAct::Pad));
+        app.tapper_tick(Instant::now());
+        assert!(app.state.tapper.muted);
+        app.state.tapper.test_time = Some(32.5);
+        app.tapper_tick(Instant::now());
+        assert!(!app.state.tapper.muted);
+        // Playback stopped: nothing mutes.
+        app.state.tapper.test_playing = false;
+        app.state.tapper.test_time = Some(40.0);
+        app.act(Action::Tapper(TapAct::Pad));
+        app.tapper_tick(Instant::now());
+        assert!(!app.state.tapper.muted);
+
+        // Apply tempo off: Sync, Mute and now only say so (drawn greyed out, no longer their own actions).
+        app.act(Action::Tapper(TapAct::Apply));
+        assert!(!get().apply);
+        app.act(Action::Tapper(TapAct::Sync));
+        assert_eq!(app.state.message.as_deref(), Some("Turn Apply tempo on first"));
+        assert!(!get().sync);
+        app.paint(&mut c, None);
+        assert!(!app.hits.iter().any(|h| h.action == Action::Tapper(TapAct::Sync)));
+        assert!(app.hits.iter().any(|h| h.action == Action::Tapper(TapAct::Nudge(1))));
     }
 
     #[test]
