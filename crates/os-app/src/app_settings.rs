@@ -222,7 +222,7 @@ thread_local! {
     static SEEN: std::cell::Cell<Option<Seen>> = const { std::cell::Cell::new(None) };
 }
 
-/// On the app's tick: the settings that follow the editors. A pattern change zips the empty channels
+/// On the app's tick: the settings that follow the editors, then autosave. A pattern change zips the empty channels
 /// and selects the first one with notes (each when on); a new selected channel selects its mixer track (Auto select
 /// linked modules). The first tick of an app only looks.
 pub fn tick(app: &mut App) {
@@ -255,6 +255,7 @@ pub fn tick(app: &mut App) {
             app.invalidate();
         }
     }
+    crate::autosave::tick(app, std::time::Instant::now());
 }
 
 /// Channel indexes with notes or steps in the current pattern.

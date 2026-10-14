@@ -7,6 +7,7 @@
 mod app;
 mod app_settings;
 mod audio_cfg;
+mod autosave;
 mod autoscroll;
 #[cfg(test)]
 mod audio_bench;
