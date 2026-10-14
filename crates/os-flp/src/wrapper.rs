@@ -23,6 +23,61 @@ pub mod rec {
 /// The type word Lemon Studio writes for a new wrapper state.
 pub const NEW_TYPE: u32 = 10;
 
+/// Component state inside FL's VST3 state record (53).
+/// Observed in FL 25.2: an 80-byte envelope followed by (u32 id, u64 size, bytes).
+pub struct Vst3State<'a> {
+    pub component: &'a [u8],
+}
+
+fn vst3_blocks(data: &[u8]) -> Result<Option<Vec<(u32, &[u8])>>, &'static str> {
+    // Recognize only the observed envelope. Ordinary component streams and vstpreset files are unchanged.
+    if !data.starts_with(&[1, 0, 0, 0, 1, 0, 0, 0, 64, 0, 0, 0]) {
+        return Ok(None);
+    }
+    if data.len() < 80 {
+        return Err("truncated FL VST3 envelope");
+    }
+    let mut at = 80usize;
+    let mut blocks = Vec::new();
+    while at < data.len() {
+        let header = data.get(at..at.checked_add(12).ok_or("VST3 record overflow")?).ok_or("truncated VST3 record")?;
+        let id = u32::from_le_bytes(header[..4].try_into().unwrap());
+        let size = usize::try_from(u64::from_le_bytes(header[4..].try_into().unwrap())).map_err(|_| "VST3 record overflow")?;
+        at += 12;
+        let end = at.checked_add(size).ok_or("VST3 record overflow")?;
+        let body = data.get(at..end).ok_or("truncated VST3 state")?;
+        if matches!(id, 3 | 4) && blocks.iter().any(|(previous, _)| *previous == id) {
+            return Err("duplicate VST3 state record");
+        }
+        blocks.push((id, body));
+        at = end;
+    }
+    if !blocks.iter().any(|(id, _)| *id == 3) {
+        return Err("FL VST3 component state is missing");
+    }
+    Ok(Some(blocks))
+}
+
+pub fn vst3_state(data: &[u8]) -> Result<Option<Vst3State<'_>>, &'static str> {
+    let Some(blocks) = vst3_blocks(data)? else { return Ok(None) };
+    Ok(Some(Vst3State {
+        component: blocks.iter().find(|(id, _)| *id == 3).unwrap().1,
+    }))
+}
+
+/// Update the component stream while retaining FL's envelope, parameter ID table (4), and unknown records.
+pub fn replace_vst3_state(base: &[u8], component: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let blocks = vst3_blocks(base)?.ok_or("not an FL VST3 envelope")?;
+    let mut out = base[..80].to_vec();
+    for (id, body) in blocks {
+        let body = if id == 3 { component } else { body };
+        out.extend(id.to_le_bytes());
+        out.extend((body.len() as u64).to_le_bytes());
+        out.extend(body);
+    }
+    Ok(out)
+}
+
 /// A parsed wrapper state: the type word and the records in file order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Records {
@@ -160,6 +215,46 @@ pub fn plugin_name(data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fl_vst3() -> Vec<u8> {
+        let mut state = vec![0; 80];
+        state[..12].copy_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0, 64, 0, 0, 0]);
+        state[16] = 1;
+        for (id, body) in [(3u32, b"processor".as_slice()), (99, b"unknown"), (4, b"parameter IDs")] {
+            state.extend(id.to_le_bytes());
+            state.extend((body.len() as u64).to_le_bytes());
+            state.extend(body);
+        }
+        state
+    }
+
+    #[test]
+    fn fl_vst3_extracts_component_and_keeps_envelope() {
+        let base = fl_vst3();
+        let parts = vst3_state(&base).unwrap().unwrap();
+        assert_eq!(parts.component, b"processor");
+        assert_eq!(replace_vst3_state(&base, parts.component).unwrap(), base);
+        let changed = replace_vst3_state(&base, b"new processor").unwrap();
+        assert_eq!(&changed[..80], &base[..80]);
+        assert!(changed.windows(7).any(|b| b == b"unknown"));
+        let parts = vst3_state(&changed).unwrap().unwrap();
+        assert_eq!(parts.component, b"new processor");
+        assert!(changed.windows(13).any(|b| b == b"parameter IDs"));
+    }
+
+    #[test]
+    fn fl_vst3_refuses_truncated_and_duplicate_streams() {
+        let base = fl_vst3();
+        for len in [12, 79, 81, base.len() - 1] {
+            assert!(vst3_state(&base[..len]).is_err());
+        }
+        let mut duplicate = base;
+        duplicate.extend(3u32.to_le_bytes());
+        duplicate.extend(0u64.to_le_bytes());
+        assert!(vst3_state(&duplicate).is_err());
+        assert!(vst3_state(b"native component").unwrap().is_none());
+        assert!(vst3_state(b"VST3 preset").unwrap().is_none());
+    }
 
     fn clap() -> PluginRef {
         PluginRef {

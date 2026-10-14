@@ -369,7 +369,7 @@ impl Plugins {
         let mut p = plugin.lock().map_err(|_| "plugin busy")?;
         if let Some(st) = state {
             if !p.load_state(st) {
-                eprintln!("[plugins] {} did not take its starting state", a.desc.name);
+                return Err(format!("{} could not restore its saved state", a.desc.name));
             }
         }
         if self.rate == 0 {
@@ -401,7 +401,9 @@ impl Plugins {
         let plugin = a.lib.clone().create(&a.desc.id)?;
         let mut p = plugin.lock().map_err(|_| "plugin busy")?;
         if let Some(st) = state {
-            p.load_state(st);
+            if !p.load_state(st) {
+                return Err(format!("{} could not restore its saved state", a.desc.name));
+            }
         }
         if self.rate == 0 {
             self.rate = crate::transport::Transport::device_rate().unwrap_or(48000);

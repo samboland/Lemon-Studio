@@ -70,6 +70,31 @@ pub fn plugin_ref(d: &Descriptor, state: Vec<u8>) -> PluginRef {
     }
 }
 
+/// Translate FL's VST3 envelope to the host's preset container without changing the project bytes.
+fn starting_state(r: &PluginRef, d: &Descriptor) -> Result<Vec<u8>, String> {
+    if r.format == "vst3" && d.format == Format::Vst3 {
+        if let Some(state) = wrapper::vst3_state(&r.state).map_err(str::to_owned)? {
+            return Ok(os_vst3::preset::Preset {
+                class_id: d.id.clone(), component: state.component.to_vec(), controller: Vec::new(),
+            }.to_bytes());
+        }
+    }
+    Ok(r.state.clone())
+}
+
+fn saved_wrapper(base: Option<&[u8]>, r: &PluginRef) -> Vec<u8> {
+    let original = base.and_then(wrapper::decode);
+    if r.format == "vst3" {
+        if let (Some(original), Some(preset)) = (original, os_vst3::preset::Preset::parse(&r.state)) {
+            if let Ok(state) = wrapper::replace_vst3_state(&original.state, &preset.component) {
+                // FL's GUID record uses its original byte order; the host uses a formatted class ID.
+                return wrapper::encode(base, &PluginRef { id: original.id, state, ..r.clone() });
+            }
+        }
+    }
+    wrapper::encode(base, r)
+}
+
 /// Writes every hosted third-party plugin into `proj` (the copy a save writes): its channel or slot becomes a wrapped
 /// plugin holding the plugin's identity and current state. A channel or slot the file already held as a wrapped
 /// plugin keeps the wrapper records Lemon Studio does not edit.
@@ -90,19 +115,19 @@ pub fn store_hosted(proj: &mut Project, plugins: &Plugins) {
         if !is_wrapped(&d) {
             continue;
         }
-        let state = plugins.state(key).unwrap_or_default();
+        let Some(state) = plugins.state(key) else { continue };
         let r = plugin_ref(&d, state);
         match fx_of(key) {
             None => {
                 let Some(ch) = proj.channels.get_mut(key).filter(|c| c.kind == ChannelKind::Plugin) else { continue };
                 let base = ch.plugin_state.as_deref().filter(|_| ch.plugin.as_deref() == Some(WRAPPER));
-                ch.plugin_state = Some(wrapper::encode(base, &r));
+                ch.plugin_state = Some(saved_wrapper(base, &r));
                 ch.plugin = Some(WRAPPER.into());
             }
             Some((t, k)) => {
                 let Some(slot) = proj.mixer.iter_mut().find(|m| m.index == t).and_then(|m| m.slots[usize::from(k)].as_mut()) else { continue };
                 let base = (slot.name == WRAPPER).then_some(slot.state.as_slice());
-                slot.state = wrapper::encode(base, &r);
+                slot.state = saved_wrapper(base, &r);
                 slot.name = WRAPPER.into();
             }
         }
@@ -220,7 +245,10 @@ impl crate::app::App {
                 continue;
             }
             let Some(r) = wrapped_channel(&self.state.project.channels[row]) else { continue };
-            let made = find(&self.plugins.available, &r).map(|i| self.plugins.create_with(row, i, Some(&r.state)));
+            let made = find(&self.plugins.available, &r).map(|i| {
+                let state = starting_state(&r, &self.plugins.available[i].desc)?;
+                self.plugins.create_with(row, i, Some(&state))
+            });
             match made {
                 Some(Ok(_)) => {
                     self.state.hosted_rows.push(row);
@@ -245,7 +273,10 @@ impl crate::app::App {
             .filter(|&(t, k, _)| !self.plugins.hosted.contains_key(&fx_key(t, k)) && !self.wrap_failed.contains(&fx_key(t, k)))
             .collect();
         for (t, k, r) in slots {
-            match find(&self.plugins.effects, &r).map(|i| self.plugins.create_effect(t, k, i, Some(&r.state))) {
+            match find(&self.plugins.effects, &r).map(|i| {
+                let state = starting_state(&r, &self.plugins.effects[i].desc)?;
+                self.plugins.create_effect(t, k, i, Some(&state))
+            }) {
                 Some(Ok(_)) => added.1 = true,
                 Some(Err(e)) => {
                     self.wrap_failed.push(fx_key(t, k));
@@ -459,6 +490,86 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::plugins::{fx_key, LEMON_EQ, LEMON_SAMPLER};
+
+    #[test]
+    fn fl_vst3_state_restores_component_and_keeps_parameter_table() {
+        let mut envelope = vec![0; 80];
+        envelope[..12].copy_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0, 64, 0, 0, 0]);
+        for (id, data) in [(3u32, b"component".as_slice()), (4, b"parameter IDs")] {
+            envelope.extend(id.to_le_bytes());
+            envelope.extend((data.len() as u64).to_le_bytes());
+            envelope.extend(data);
+        }
+        let mut desc = crate::plugins::builtin()[0].desc.clone();
+        desc.format = Format::Vst3;
+        desc.id = "0123456789ABCDEF0123456789ABCDEF".into();
+        let mut original = plugin_ref(&desc, envelope.clone());
+        original.id = "EFCDAB8967452301EFCDAB8967452301".into();
+        let host_state = starting_state(&original, &desc).unwrap();
+        let mut preset = os_vst3::preset::Preset::parse(&host_state).unwrap();
+        assert_eq!(preset.component, b"component");
+        assert_eq!(preset.class_id, desc.id);
+        assert!(preset.controller.is_empty());
+        let base = wrapper::encode(None, &original);
+        let saved = saved_wrapper(Some(&base), &plugin_ref(&desc, host_state));
+        assert_eq!(saved, base, "unchanged state preserves the original FL wrapper bytes");
+        preset.component = b"edited".to_vec();
+        let saved = wrapper::decode(&saved_wrapper(Some(&base), &plugin_ref(&desc, preset.to_bytes()))).unwrap();
+        let parts = wrapper::vst3_state(&saved.state).unwrap().unwrap();
+        assert_eq!(parts.component, b"edited");
+        assert!(saved.state.windows(13).any(|b| b == b"parameter IDs"));
+        assert_eq!(&saved.state[..80], &envelope[..80]);
+    }
+
+    #[test]
+    fn rejected_wrapped_state_keeps_project_bytes() {
+        let mut app = App::new(None);
+        app.plugins = crate::plugins::Plugins::builtins();
+        let descriptor = app.plugins.available[app.plugins.index_of(LEMON_SAMPLER).unwrap()].desc.clone();
+        let state = wrapper::encode(None, &plugin_ref(&descriptor, Vec::new()));
+        let row = crate::app::add_plugin_channel(&mut app.state.project, WRAPPER);
+        app.state.project.channels[row].plugin_state = Some(state.clone());
+        app.sync_wrapped();
+        assert!(!app.plugins.hosted.contains_key(&row));
+        assert!(app.wrap_failed.contains(&row));
+        assert!(app.state.message.as_deref().unwrap_or_default().contains("could not restore"));
+        store_hosted(&mut app.state.project, &app.plugins);
+        assert_eq!(app.state.project.channels[row].plugin_state.as_deref(), Some(state.as_slice()));
+    }
+
+    #[test]
+    #[ignore = "loads one installed plugin without opening an editor; set OS_FLP_VST3_CHECK and OS_FLP_VST3_CHANNEL"]
+    fn fl_vst3_native_restore() {
+        let path = std::env::var_os("OS_FLP_VST3_CHECK").expect("project path");
+        let row: usize = std::env::var("OS_FLP_VST3_CHANNEL").unwrap().parse().unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let project = os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();
+        let r = wrapped_channel(&project.channels[row]).unwrap();
+        assert_eq!(r.format, "vst3");
+        let lib = crate::plugins::load_file(std::path::Path::new(&r.path), Format::Vst3).unwrap();
+        let descriptor = lib.plugins().iter().find(|d| d.name == r.name).unwrap().clone();
+        let state = starting_state(&r, &descriptor).unwrap();
+        let expected = os_vst3::preset::Preset::parse(&state).unwrap();
+        eprintln!("Restoring {}: component {} bytes, controller {} bytes", r.name, expected.component.len(), expected.controller.len());
+        let mut plugins = crate::plugins::Plugins::default();
+        plugins.available.push(crate::plugins::Available { desc: descriptor, lib });
+        plugins.create_with(row, 0, Some(&state)).unwrap();
+        let restored = os_vst3::preset::Preset::parse(&plugins.state(row).unwrap()).unwrap();
+        eprintln!("Restored {}: component {} bytes, controller {} bytes; component equal {}, controller equal {}",
+            r.name, restored.component.len(), restored.controller.len(), restored.component == expected.component, restored.controller == expected.controller);
+        if let Some(dir) = std::env::var_os("OS_FLP_VST3_EVIDENCE_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("{row}-expected-component.bin")), &expected.component).unwrap();
+            std::fs::write(dir.join(format!("{row}-restored-component.bin")), &restored.component).unwrap();
+            std::fs::write(dir.join(format!("{row}-expected-controller.bin")), &expected.controller).unwrap();
+            std::fs::write(dir.join(format!("{row}-restored-controller.bin")), &restored.controller).unwrap();
+        }
+        assert!(!restored.component.is_empty(), "plugin did not return restored state");
+        // This isolated state probe does not exercise third-party shutdown; an instance may own background threads.
+        // Keep its module loaded until the test process exits. Compare evidence streams separately for semantics.
+        std::mem::forget(plugins);
+    }
 
     /// A hosted plugin channel and a mixer slot plugin are saved as wrapped plugins holding their identity and state,
     /// and the reopened project hosts them again with that state; a second save keeps working on the saved file
