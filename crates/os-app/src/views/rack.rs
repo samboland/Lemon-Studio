@@ -399,8 +399,21 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
         let step_area = Rect::span(step_x0 - 1.0, steps_right, rows_clip.y, rows_clip.bottom());
         if s.rack_roll_view || !plain_steps(notes, ch.index) {
             let block = Rect::span(step_x0 - 2.0, steps_right + 2.0, ry - 2.0, ry + 28.0);
-            mini_roll(ui, block, notes, ch.index, per_step, sx, focused);
+            let complete = s.rack.opts.contains(rk::OPT_COMPLETE);
+            mini_roll(ui, block, notes, ch.index, per_step, sx, focused, complete);
             ui.hit(block.intersect(&rows_clip), Action::RackRoll(i), "Piano roll preview - click to open the Piano roll");
+            // Mute button on the preview (§17), linked to the channel's mute.
+            if s.rack.opts.contains(rk::OPT_PREVIEW_MUTE) {
+                let mr = Rect::new(block.right() - 20.0, ry + 5.0, 16.0, 16.0);
+                let tip = if ch.enabled { "Mute channel" } else { "Unmute channel" };
+                let mhov = ui.hit(mr.intersect(&rows_clip), Action::Rack(rk::RAct::PreviewMute(i)), tip);
+                ui.c.fill_rrect(mr, 3.0, if mhov { t.button_hi } else { t.rack_row_box });
+                let ic = if ch.enabled { t.glyph } else { ui.t.h(0xe05050) };
+                icons::draw(ui.c, Icon::Speaker, mr.inset(2.0), ic);
+                if !ch.enabled {
+                    ui.c.polyline(&[(mr.x + 3.0, mr.bottom() - 3.0), (mr.right() - 3.0, mr.y + 3.0)], 1.5, ic);
+                }
+            }
         } else {
             let row_len = rk::row_len(s, i);
             ui.c.push_clip(step_area);
@@ -412,11 +425,17 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
             }
             ui.c.pop_clip();
         }
-        // Loop length box (§15).
+        // Loop length box (§15); under Advanced looping a click picks the loop point (Don't loop / Step / Beat / Bar).
         if s.rack.loop_mode {
             let lb = Rect::new(steps_right + 10.0, ry + 2.0, 24.0, 22.0);
             let has = notes.iter().any(|n| n.channel == ch.index);
-            let lhov = ui.hit(lb, Action::RackLoopBox(i), "Set loop point");
+            let advanced = s.rack.loop_type == rk::LOOP_ADVANCED;
+            let tip = if advanced {
+                format!("Loop point: {} - click to change", s.rack.adv_loop.get(&i).copied().unwrap_or_default().label())
+            } else {
+                "Set loop point".to_string()
+            };
+            let lhov = ui.hit(lb, Action::RackLoopBox(i), tip);
             if lemon {
                 lk::small_box(ui.c, t, lb, t.rack_row_box, lhov);
             } else {
@@ -678,7 +697,7 @@ fn graph_editor(ui: &mut Ui, s: &State, sx: f32, first: u32, shown: u32) {
         ui.c.fill_rect(col, if (k / 4) % 2 == 0 { ui.t.s(0x1b1e20) } else { ui.t.s(0x202326) });
         ui.c.fill_rect(Rect::new(col.right() - 1.0, col.y, 1.0, col.h), ui.t.s(0x111315));
         let Some(n) = notes.iter().find(|n| n.position / ps == k) else { continue };
-        let v = tab.get(n, ps);
+        let v = tab.get_in(n, ps, s.rack.key_lo);
         let c = ui.t.a(tab.color());
         if tab.centred() {
             let mid = bars.y + bars.h / 2.0;
@@ -701,6 +720,21 @@ fn graph_editor(ui: &mut Ui, s: &State, sx: f32, first: u32, shown: u32) {
         None => "Graph editor".into(),
     };
     ui.hit(bars, Action::RackGraphArea, hint);
+    // Note tab (the rack's keyboard editor): its two-octave span moves by octaves over the whole keyboard (Lemon
+    // Studio choice).
+    if tab == Tab::Note {
+        let lo = s.rack.key_lo;
+        let label = format!("{} - {}", rk::key_name(lo), rk::key_name(lo + rk::KEY_SPAN));
+        let f = Font::new(11);
+        let lw = ui.c.text_width(f, &label);
+        let (bx, by) = (bars.x + 4.0, bars.y + 3.0);
+        for (k, (d, tip, dir)) in [(-1, "Note range an octave down", os_ui::kit::Dir::Left), (1, "Note range an octave up", os_ui::kit::Dir::Right)].into_iter().enumerate() {
+            let br = Rect::new(bx + k as f32 * (lw + 24.0), by, 14.0, 14.0);
+            let hov = ui.hit(br, Action::Rack(rk::RAct::KeyOctave(d)), tip);
+            os_ui::kit::arrow_button(ui.c, t, br, dir, os_ui::kit::State::hover(hov));
+        }
+        ui.c.text(f, bx + 18.0, by, t.text_dim, &label);
+    }
     // Tab row.
     let tr = Rect::new(g.x, g.bottom() - GRAPH_TABS_H, g.w, GRAPH_TABS_H);
     ui.c.fill_rect(tr, ui.t.s(0x23272a));
@@ -716,7 +750,10 @@ fn graph_editor(ui: &mut Ui, s: &State, sx: f32, first: u32, shown: u32) {
 }
 
 /// Mini piano roll of one channel (§6) in `block` (one 30 px row); `sx` is the step scroll in pixels.
-fn mini_roll(ui: &mut Ui, block: Rect, notes: &[os_model::Note], ch: u16, per_step: u32, sx: f32, focused: bool) {
+/// `complete` ("Show complete piano roll preview", §17): the key range fits every note of the channel; off, only the
+/// notes in the visible steps.
+#[allow(clippy::too_many_arguments)]
+fn mini_roll(ui: &mut Ui, block: Rect, notes: &[os_model::Note], ch: u16, per_step: u32, sx: f32, focused: bool, complete: bool) {
     // (separator, fill) for odd and even bars.
     let shades = if focused {
         [(ui.t.s(0x040709), ui.t.s(0x111416)), (ui.t.s(0x000002), ui.t.s(0x0a0d0f))]
@@ -737,15 +774,18 @@ fn mini_roll(ui: &mut Ui, block: Rect, notes: &[os_model::Note], ch: u16, per_st
         k += 1.0;
     }
     let mine: Vec<&os_model::Note> = notes.iter().filter(|n| n.channel == ch).collect();
-    let lo = mine.iter().map(|n| n.key).min().unwrap_or(60);
-    let hi = mine.iter().map(|n| n.key).max().unwrap_or(60);
+    let (t0, t1) = ((sx / STEP_W * per_step as f32) as u32, ((sx + block.w) / STEP_W * per_step as f32) as u32);
+    let ranged = mine.iter().filter(|n| complete || (n.position + n.length.max(1) > t0 && n.position < t1));
+    let lo = ranged.clone().map(|n| n.key).min().unwrap_or(60);
+    let hi = ranged.map(|n| n.key).max().unwrap_or(60);
     let range = f32::from((hi - lo).max(1));
     ui.c.push_clip(block);
     for n in mine {
         let nx = block.x + 2.0 + n.position as f32 / per_step as f32 * STEP_W - sx;
         let len = if n.length == 0 { per_step } else { n.length };
         let nw = (len as f32 / per_step as f32 * STEP_W - 1.0).max(2.0);
-        let t = if hi == lo { 0.5 } else { f32::from(n.key - lo) / range };
+        // Notes outside the visible steps may lie outside the range when the preview is not complete.
+        let t = if hi == lo { 0.5 } else { ((f32::from(n.key) - f32::from(lo)) / range).clamp(0.0, 1.0) };
         let ny = (block.bottom() - 7.0 - t * (block.h - 10.0)).round();
         ui.c.fill_rect(Rect::new(nx, ny, nw, 1.0), ui.t.a(0x698a6f));
         ui.c.fill_rect(Rect::new(nx, ny + 1.0, nw, 3.0), ui.t.a(0x9ed1a5));

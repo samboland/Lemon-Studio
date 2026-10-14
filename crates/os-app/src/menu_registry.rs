@@ -36,6 +36,8 @@ pub const AREAS: &[Area] = &[
     Area { name: "patterns", handles: crate::patterns::menu_handles, run: crate::patterns::menu_run },
     // Last tweaked parameter entries in ADD and TOOLS (spec: plugins/plugin-parameters.md §5).
     Area { name: "params", handles: params_handles, run: params_run },
+    // Channel rack channels in ADD (spec: ui/channel-rack.md).
+    Area { name: "rack", handles: crate::rack_menu::menu_handles, run: crate::rack_menu::menu_run },
 ];
 
 fn params_handles(_menu: usize, label: &str) -> bool {
