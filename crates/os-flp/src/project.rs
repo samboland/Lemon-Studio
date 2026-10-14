@@ -1626,26 +1626,48 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     }
     let info = &project.info;
     let old_info = &current.info;
-    for (loc, value, old) in [
-        (l.title, &info.title, &old_info.title),
-        (l.author, &info.author, &old_info.author),
-        (l.genre, &info.genre, &old_info.genre),
-        (l.comments, &info.comments, &old_info.comments),
-        (l.url, &info.url, &old_info.url),
+    // A field the file lacks goes after the last one it has, else after the current pattern or the tempo, in the
+    // order `create` writes them (title, genre, author, comments, web link).
+    let info_at = [l.title, l.genre, l.author, l.comments, l.url].into_iter().flatten().max().or(l.current_pattern).or(l.tempo).map_or(0, |i| i + 1);
+    let mut added = Vec::new();
+    for (loc, field, value, old) in [
+        (l.title, id::TITLE, &info.title, &old_info.title),
+        (l.genre, id::GENRE, &info.genre, &old_info.genre),
+        (l.author, id::AUTHOR, &info.author, &old_info.author),
+        (l.comments, id::COMMENTS, &info.comments, &old_info.comments),
+        (l.url, id::URL, &info.url, &old_info.url),
     ] {
         if value == old {
             continue;
         }
-        let value = if loc == l.comments { value.as_deref().map(comments_to_file) } else { value.clone() };
+        let value = if field == id::COMMENTS { value.as_deref().map(comments_to_file) } else { value.clone() };
         match (loc, value) {
             (Some(i), Some(v)) => set_data(&mut events[i], encode_text(&v, enc)),
             (Some(i), None) => set_data(&mut events[i], encode_text("", enc)),
-            (None, Some(v)) if !v.is_empty() => {
-                return Err(ProjectError::Mismatch("adding a missing project-info field".into()));
-            }
+            (None, Some(v)) if !v.is_empty() => added.push(Event::new(field, Value::var(encode_text(&v, enc)))),
             _ => {}
         }
     }
+    inserts.extend(added.into_iter().rev().map(|e| (info_at, e)));
+    // Time signature (events 17, 18) and "play truncated notes" (event 30), FL's place for them being after the main
+    // pitch (spec: flp/engine-events.md "Project"). Missing ones go after the main pitch, the swing or the tempo.
+    let time_at = l.main_pitch.or(l.swing).or(l.tempo).map_or(0, |i| i + 1);
+    let mut added = Vec::new();
+    if let Some((n, d)) = project.time_signature.filter(|&v| Some(v) != current.time_signature) {
+        for (loc, field, v) in [(l.time_num, id::TIME_NUM, n), (l.time_den, id::TIME_DEN, d)] {
+            match loc {
+                Some(i) => set_int(&mut events[i], v.into()),
+                None => added.push(Event::new(field, Value::U8(v.min(255) as u8))),
+            }
+        }
+    }
+    if let Some(v) = project.play_truncated.filter(|&v| Some(v) != current.play_truncated) {
+        match l.truncated {
+            Some(i) => set_int(&mut events[i], v.into()),
+            None => added.push(Event::new(id::PLAY_TRUNCATED, Value::U8(v.into()))),
+        }
+    }
+    inserts.extend(added.into_iter().rev().map(|e| (time_at, e)));
     if let (Some(i), Some(v)) = (l.current_pattern, project.current_pattern.filter(|&v| Some(v) != current.current_pattern)) {
         set_int(&mut events[i], v.into());
     }
@@ -2968,6 +2990,42 @@ mod tests {
             ],
             ..Project::default()
         }
+    }
+
+    /// The project's time signature, "play truncated notes" and credits are written by `apply`: added when the file
+    /// has none (a created file has only the title), changed in place afterwards (spec: flp/engine-events.md
+    /// "Project", flp/events/project-info.md).
+    #[test]
+    fn apply_writes_time_signature_truncation_and_credits() {
+        let mut p = new_project();
+        let mut file = create(&p).unwrap();
+        let back = load(&file).unwrap();
+        assert_eq!((back.time_signature, back.play_truncated, back.info.genre.as_deref()), (None, None, None));
+        p.time_signature = Some((7, 8));
+        p.play_truncated = Some(true);
+        p.info.genre = Some("Ambient".into());
+        p.info.author = Some("Sam".into());
+        p.info.comments = Some("line one\nline two".into());
+        p.info.url = Some("https://example.org".into());
+        apply(&p, &mut file).unwrap();
+        let file = FlpFile::parse(&file.to_bytes().unwrap()).unwrap();
+        let back = load(&file).unwrap();
+        assert_eq!((back.time_signature, back.play_truncated), (Some((7, 8)), Some(true)));
+        assert_eq!(back.info, p.info);
+        assert_eq!(back.tempo, p.tempo, "the prelude is intact");
+        assert_eq!(back.patterns.len(), p.patterns.len());
+        // Again, now that the file has them all: changed in place, nothing added.
+        let mut file = file;
+        let count = events_of(&file).unwrap().len();
+        p.time_signature = Some((3, 4));
+        p.play_truncated = Some(false);
+        p.info.title = Some("Renamed".into());
+        p.info.genre = None;
+        apply(&p, &mut file).unwrap();
+        assert_eq!(events_of(&file).unwrap().len(), count);
+        let back = load(&FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
+        assert_eq!((back.time_signature, back.play_truncated), (Some((3, 4)), Some(false)));
+        assert_eq!((back.info.title.as_deref(), back.info.genre.as_deref(), back.info.author.as_deref()), (Some("Renamed"), Some(""), Some("Sam")));
     }
 
     /// A project made from the model alone reads back the same, and `apply` can edit it afterwards
