@@ -683,7 +683,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
                 ui.c.fill_rrect(pill, lk::r_btn(t), if hov { t.button_hi } else { body });
             }
         } else {
-            let body = if on { t.s(0x161819) } else if hov { t.button_hi } else { t.s(0x242627) };
+            let body = if on { t.s(0x191b1c) } else if hov { t.button_hi } else { t.s(0x202224) };
             ui.c.fill_rrect(tr, 5.0, body);
             ui.c.fill_polygon(&[(tr.x, tr.bottom() - 5.0), (tr.x, tr.bottom()), (tr.right() + 14.0, tr.bottom()),
                 (tr.right(), tr.y + 5.0), (tr.right() - 5.0, tr.y + 5.0), (tr.right() - 5.0, tr.bottom() - 5.0)], body);
@@ -701,12 +701,13 @@ pub fn paint(ui: &mut Ui, s: &State) {
         let ty = if lemon { tr.cy() - 2.0 } else { tr.cy() };
         ui.c.text_center(font, Rect::new(tr.x, (ty - lh / 2.0).round(), tr.w, lh), col, label);
     }
-    ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + TABS_B, r.w - 2.0, 1.0), t.s(0x1c1e21));
+    let page_color = if lemon { t.s(0x343638) } else { t.s(0x2e3032) };
+    ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + TABS_B, r.w - 2.0, 1.0), page_color);
     // Page.
     let area = Rect::new(r.x + 1.0, r.y + TABS_B + 1.0, r.w - 2.0, r.h - TABS_B - 3.0);
     let total = content_h(s);
     let scroll = st.scroll.min((total - area.h).max(0.0)).max(0.0);
-    ui.c.fill_rect(area, t.s(0x343638));
+    ui.c.fill_rect(area, page_color);
     ui.c.push_clip(area);
     let mut y = area.y + 15.0 - scroll;
     for gr in page(st.tab, s) {
@@ -737,7 +738,7 @@ fn tab_rects(ui: &mut Ui, r: Rect) -> Vec<Rect> {
             x += 8.0;
         }
         let w = text[i] + padding;
-        v.push(Rect::new(x.round(), r.y + 30.0, w.round(), TABS_B - 34.0));
+        v.push(Rect::new(x.round(), r.y + 30.0, w.round(), TABS_B - 30.0));
         x += w + 14.0;
     }
     v
