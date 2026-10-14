@@ -24,8 +24,11 @@ FL Studio's saved PPI and note-name preferences are not imported.
 Browser resizing and file context commands are described in
 [Browser projects](browser-projects.md).
 
-The browser edge and toolbar bottom use one logical pixel for their divider.
-The browser retains an eight-pixel resize target. Settings page controls accept
-input only inside the visible page. Floating titles stop before window buttons.
+The browser retains FL Studio's eight-pixel resize gutter, with one device pixel
+on each border. The toolbar bottom uses one logical pixel for its divider.
+Settings page controls accept
+input only inside the visible page. Floating titles use an ellipsis before window buttons.
+Classic window titles use the system font, following the native FL captions.
+Classic Settings dropdown arrows point down.
 Classic Mixer FX slots use horizontal separators and downward menu arrows,
 following the captured FL Studio Wide layout.

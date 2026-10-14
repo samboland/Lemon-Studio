@@ -77,9 +77,12 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let floating = !s.wins[Win::PianoRoll.slot().unwrap_or(0)].maxed && r.h >= 2.0 * crate::app::TITLE_H;
     let (r, _) = super::framed(ui, s, Win::PianoRoll, r, &title, 365.0, true);
     // The title's › (channel menu): not available yet, greyed out.
-    let ax = r.x + 365.0 + ui.c.text_width(Font::new(17), &title);
-    ui.c.text(Font::new(17), ax, r.y + 1.0, t.text_faint, "\u{203a}");
-    ui.off(Rect::new(ax - 3.0, r.y + 2.0, 13.0, 19.0), "Piano roll channel menu");
+    let title_font = super::title_font(ui);
+    let ax = r.x + 365.0 + ui.c.text_width(title_font, &title);
+    if ax + 10.0 <= r.right() - 68.0 {
+        ui.c.text(title_font, ax, super::title_y(ui, r, floating), t.text_faint, "\u{203a}");
+        ui.off(Rect::new(ax - 3.0, r.y + 2.0, 13.0, 19.0), "Piano roll channel menu");
+    }
     let shift = if floating { -4.0 } else { 0.0 };
     toolbar(ui, r, shift, s.piano.tool);
     if r.h < 2.0 * crate::app::TITLE_H {

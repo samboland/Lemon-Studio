@@ -629,7 +629,7 @@ fn settings_combo(ui: &mut Ui, r: Rect, text: &str, font: Font, hover: bool) {
     ui.c.fill_rect_gradient(r.inset(1.0), t.s(0x1a1b1c), t.s(0x0a0b0c), 1.0);
     let lh = ui.c.line_height(font);
     ui.c.text_clip(font, r.x + 4.0, (r.cy() - lh / 2.0).round(), r.w - 18.0, t.text, text);
-    kit::chevron(ui.c, r.right() - 7.0, r.cy(), 3.0, Dir::Right, t.text_dim);
+    kit::triangle(ui.c, r.right() - 7.0, r.cy(), 3.0, Dir::Down, t.text_dim);
 }
 
 /// Total content height of the current page (for scrolling).

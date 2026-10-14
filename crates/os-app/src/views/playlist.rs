@@ -72,7 +72,8 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     ui.c.set_cover(None);
     // The arrangement name opens the arrangement menu; hovered it turns orange with a down arrow (§12, as FL).
     {
-        let f = Font::new(17);
+        let f = super::title_font(ui);
+        let title_y = super::title_y(ui, r, fr != outer);
         let x0 = r.x + 281.0 + ui.c.text_width(f, "Playlist - ");
         let w = ui.c.text_width(f, &arr);
         let arrow_w = ui.c.text_width(f, "  \u{203a}  ");
@@ -83,9 +84,12 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             let bg = ui.t.window_title;
             ui.c.fill_rect(Rect::new(x0 - 1.0, r.y + 1.0, w + arrow_w * 0.7, 20.0), bg);
             let hot = ui.t.h(0xf7a94c);
-            ui.c.text(f, x0, r.y + 1.0, hot, &arr);
+            let label = super::fitted_title(ui.c, f, &arr, (title_bounds.right() - x0).max(0.0));
+            ui.c.text(f, x0, title_y, hot, &label);
             let ax = x0 + w + arrow_w * 0.35;
-            ui.c.fill_polygon(&[(ax - 4.0, r.y + 9.0), (ax + 4.0, r.y + 9.0), (ax, r.y + 14.0)], hot);
+            if ax + 4.0 <= title_bounds.right() {
+                ui.c.fill_polygon(&[(ax - 4.0, r.y + 9.0), (ax + 4.0, r.y + 9.0), (ax, r.y + 14.0)], hot);
+            }
             ui.c.pop_clip();
         }
     }

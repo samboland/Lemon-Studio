@@ -472,8 +472,8 @@ pub fn max_scroll(s: &State) -> f32 {
 
 pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
-    let content = r.w - 1.0;
-    let right = content;
+    let content = r.w - 8.0;
+    let right = content - 1.0;
     ui.hit(r, Action::Swallow, "");
     // Title bar.
     ui.c.fill_rect(Rect::span(0.0, right, 83.0, 105.0), t.browser_title);
@@ -595,7 +595,13 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let hov = ui.hit(glass, Action::BrowserSearch, "Search the browser (Enter = find next, Esc = clear)");
     icons::draw(ui.c, Icon::Search, Rect::new(right - 20.0, fy + 5.0, 17.0, 17.0), if hov { t.browser_search.shade(0.2) } else { t.browser_search });
     // Splitter.
-    ui.c.fill_rect(Rect::new(content, 83.0, 1.0, r.h), t.splitter_dark);
+    // FL keeps the resize gutter. Only its two border lines are device-pixel thin.
+    let pixel = 1.0 / ui.c.scale;
+    let edge = (content * ui.c.scale).floor() / ui.c.scale;
+    let end = (r.w * ui.c.scale).floor() / ui.c.scale;
+    ui.c.fill_rect(Rect::new(edge, 83.0, end - edge, r.h), t.splitter);
+    ui.c.fill_rect(Rect::new(edge, 83.0, pixel, r.h), t.splitter_dark);
+    ui.c.fill_rect(Rect::new(end - pixel, 83.0, pixel, r.h), t.splitter_dark);
     ui.hit(Rect::new(r.w - 8.0, 83.0, 8.0, r.h), Action::BrowserResize, "Drag to resize the browser");
 }
 

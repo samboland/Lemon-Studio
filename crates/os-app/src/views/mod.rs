@@ -200,6 +200,30 @@ pub fn window_frame(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32, b
     window_frame_ex(ui, win, r, title, title_x, buttons, false)
 }
 
+/// FL marks a shortened title with an ellipsis instead of cutting a word at the edge.
+pub(super) fn fitted_title(c: &mut os_ui::Canvas, font: os_ui::Font, title: &str, width: f32) -> String {
+    if c.text_width(font, title) <= width {
+        return title.to_string();
+    }
+    let suffix = "...";
+    if c.text_width(font, suffix) > width {
+        return String::new();
+    }
+    let mut text = title.trim_end().to_string();
+    while !text.is_empty() && c.text_width(font, &format!("{text}{suffix}")) > width {
+        text.pop();
+    }
+    format!("{}{suffix}", text.trim_end())
+}
+
+pub(super) fn title_font(ui: &Ui) -> os_ui::Font {
+    if lemon(ui) { os_ui::Font::new(17) } else { os_ui::Font::system(13) }
+}
+
+pub(super) fn title_y(ui: &Ui, r: Rect, flat: bool) -> f32 {
+    r.y + if flat && !lemon(ui) { -2.0 } else { 1.0 }
+}
+
 /// `window_frame` with `flat`: a flat title bar without the separator (inside a floating frame).
 pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32, buttons: bool, flat: bool) -> Rect {
     let t = ui.t;
@@ -215,7 +239,10 @@ pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32
         ui.c.fill_rect(Rect::new(r.x, r.y + 22.0, r.w, 1.0), t.splitter_dark);
     }
     let title_right = r.right() - if buttons { 68.0 } else { 4.0 };
-    ui.c.text_clip(os_ui::Font::new(17), r.x + title_x, r.y + 1.0, (title_right - r.x - title_x).max(0.0), t.text, title);
+    let width = (title_right - r.x - title_x).max(0.0);
+    let font = title_font(ui);
+    let title = fitted_title(ui.c, font, title, width);
+    ui.c.text_clip(font, r.x + title_x, title_y(ui, r, flat), width, t.text, &title);
     ui.hit(bar, Action::WinDrag(win), "Drag to move");
     // Minimize / maximize / close glyphs at the right (1862, 1881, 1901 at full width).
     if buttons {
