@@ -1,4 +1,5 @@
-//! Mixer window (wide layout: strips plus the selected track's slot panel).
+//! Mixer window (strips in the chosen layout, the selected track's slot panel with its equalizer, and the track
+//! inspector).
 // spec: ui/main-window.md §7 (layout), ui/mixer.md (controls, hints, routing look); fader law: audio/gain-laws.md
 
 use std::f32::consts::PI;
@@ -13,6 +14,7 @@ use crate::meters;
 use crate::mixer::{self as mx, MHit};
 use crate::icons::{self, Icon};
 
+/// Strip pitch of the Wide layout (the measured one; the other layouts: `mixer::strip_w`).
 pub const STRIP_W: f32 = 44.0;
 /// Fader travel: value units per pixel (handle centre 618 at 0 dB = value 0.8, 970 at value 0).
 pub const FADER_PER_PX: f64 = 1.0 / 440.0;
@@ -58,11 +60,13 @@ pub fn scale(r: Rect) -> f32 {
 struct Ly {
     top: f32,
     k: f32,
+    /// Strip pitch of the layout.
+    w: f32,
 }
 
 impl Ly {
-    fn new(r: Rect) -> Ly {
-        Ly { top: r.y, k: scale(r) }
+    fn new(r: Rect, w: f32) -> Ly {
+        Ly { top: r.y, k: scale(r), w }
     }
 
     fn y(&self, abs: f32) -> f32 {
@@ -96,28 +100,33 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let outer = r;
     let inner = super::float_frame(ui, s, Win::Mixer, r);
     let r = inner.unwrap_or(r);
-    let client = super::window_frame_ex(ui, Win::Mixer, Rect::new(r.x, r.y, r.w - panel_w, r.h), "", 0.0, false, inner.is_some());
-    title_tools(ui, s, r);
+    // The "alt" layouts have the slot panel on the left (Lemon Studio choice).
+    let left = mx::panel_left(s.mixer.layout);
+    let sr = if left { Rect::new(r.x + panel_w, r.y, r.w - panel_w, r.h) } else { Rect::new(r.x, r.y, r.w - panel_w, r.h) };
+    let pr = Rect::new(if left { r.x } else { r.right() - panel_w }, r.y, panel_w, r.h);
+    let client = super::window_frame_ex(ui, Win::Mixer, sr, "", 0.0, false, inner.is_some());
+    title_tools(ui, s, sr);
     if r.h < 2.0 * TITLE_H {
         // Collapsed to the title bar: only the slot panel's title with the window buttons.
-        slot_panel(ui, s, Rect::new(r.right() - panel_w, r.y, panel_w, r.h));
+        slot_panel(ui, s, pr);
         return;
     }
-    let ly = Ly::new(r);
+    let w = mx::strip_w(s.mixer.layout);
+    let ly = Ly::new(r, w);
 
-    let strips = Rect::new(r.x, client.y, r.w - panel_w - 7.0, client.h);
-    ui.c.fill_rect(Rect::new(r.x, client.y, r.w - panel_w, client.h), ui.t.s(0x232527));
+    let insp_w = if s.mixer.view.inspector { 168.0 } else { 0.0 };
+    let strips = Rect::new(sr.x, client.y, sr.w - 7.0 - insp_w, client.h);
+    ui.c.fill_rect(Rect::new(sr.x, client.y, sr.w, client.h), ui.t.s(0x232527));
     ui.hit(strips, Action::MixerArea, "Mixer");
-    let inserts = mx::inserts(s);
     let bottom = r.bottom();
 
     // Header row: "C" (scale) and "M" (master) on a lighter band.
-    ui.c.fill_rect(Rect::new(r.x + 1.0, ly.y(HEAD_Y0), 92.0, HEAD_Y1 - HEAD_Y0 + 1.0), ui.t.s(0x2b2e30));
-    ui.c.text_center(Font::new(17), Rect::new(r.x + 12.0, ly.y(HEAD_Y0), 20.0, 21.0), ui.t.s(0x6d7275), "C");
-    ui.c.text_center(Font::new(17), Rect::new(r.x + 50.0, ly.y(HEAD_Y0), 22.0, 21.0), ui.t.s(0x6d7275), "M");
+    ui.c.fill_rect(Rect::new(sr.x + 1.0, ly.y(HEAD_Y0), 48.0 + w, HEAD_Y1 - HEAD_Y0 + 1.0), ui.t.s(0x2b2e30));
+    ui.c.text_center(Font::new(17), Rect::new(sr.x + 12.0, ly.y(HEAD_Y0), 20.0, 21.0), ui.t.s(0x6d7275), "C");
+    ui.c.text_center(Font::new(17), Rect::new(sr.x + 44.0 + w / 2.0 - 16.0, ly.y(HEAD_Y0), 22.0, 21.0), ui.t.s(0x6d7275), "M");
 
     // "C" column: the level scale with the current track's meter (spec: ui/mixer.md §9).
-    let col = Rect::new(r.x + 9.0, ly.y(METER_Y0), 28.0, bottom - 156.0 - ly.y(METER_Y0));
+    let col = Rect::new(sr.x + 9.0, ly.y(METER_Y0), 28.0, bottom - 156.0 - ly.y(METER_Y0));
     let cfg = &s.mixer.meter_cfg;
     let floor = cfg.v[meters::k::FLOOR_DB];
     let hint = if col.contains(ui.mouse.0, ui.mouse.1) {
@@ -161,23 +170,26 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         }
     }
 
-    // Inserts scroll; the master strip and the scale stay put.
-    let area = Rect::new(r.x + 97.0, client.y, strips.w - 97.0, client.h);
-    ui.c.fill_rect(Rect::new(r.x + 88.0, client.y, 9.0, client.h), ui.t.s(0x1a1e20));
+    // Inserts scroll (left-docked ones first); right-docked ones stay at the right edge; the master strip and the
+    // scale stay put (track menu > Dock to).
+    let area = Rect::new(sr.x + 53.0 + w, client.y, strips.w - 53.0 - w, client.h);
+    ui.c.fill_rect(Rect::new(sr.x + 44.0 + w, client.y, 9.0, client.h), ui.t.s(0x1a1e20));
     for k in 0..3 {
-        ui.c.fill_rect(Rect::new(r.x + 92.0, ly.y(497.0 + 3.0 * k as f32), 1.0, 1.0), ui.t.s(0x3a3e41));
+        ui.c.fill_rect(Rect::new(sr.x + 48.0 + w, ly.y(497.0 + 3.0 * k as f32), 1.0, 1.0), ui.t.s(0x3a3e41));
     }
-    ui.c.push_clip(area);
-    let first = (s.mixer_scroll / STRIP_W) as usize;
-    let count = (area.w / STRIP_W).ceil() as usize + 2;
-    for n in (first + 1..first + 1 + count).filter(|n| *n <= usize::from(inserts)) {
-        let left = area.x + STRIP_W * (n - 1) as f32 - s.mixer_scroll;
-        strip(ui, s, n as u16, left, bottom, f, &ly);
+    let (order, right) = mx::strip_order(s);
+    let scroll_area = Rect::new(area.x, area.y, (area.w - w * right.len() as f32).max(w), area.h);
+    ui.c.push_clip(scroll_area);
+    let first = (s.mixer_scroll / w) as usize;
+    let count = (scroll_area.w / w).ceil() as usize + 2;
+    for (i, &n) in order.iter().enumerate().skip(first).take(count) {
+        let x = scroll_area.x + w * i as f32 - s.mixer_scroll;
+        strip(ui, s, n, x, bottom, f, &ly);
     }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
-    let px = area.x + STRIP_W * f32::from(inserts) - s.mixer_scroll + 14.0;
+    let px = scroll_area.x + w * order.len() as f32 - s.mixer_scroll + 14.0;
     let pb = Rect::new(px - 9.0, ly.y(HANDLE_0DB) - 9.0, 18.0, 18.0);
-    if px < area.right() + 10.0 {
+    if px < scroll_area.right() + 10.0 {
         let hov = ui.hit(pb, Action::Mix(MHit::Add), "Add more tracks");
         if hov && lemon {
             ui.c.fill_rrect(pb, lk::r_btn(ui.t), ui.t.button_hi);
@@ -187,15 +199,62 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         icons::draw(ui.c, Icon::Plus, pb.inset(3.0), if hov { ui.t.tx(0xffffff) } else { ui.t.tx(0x9aa1a5) });
     }
     ui.c.pop_clip();
-    strip(ui, s, 0, r.x + 44.0, bottom, f, &ly);
+    if !right.is_empty() {
+        ui.c.push_clip(area);
+        for (i, &n) in right.iter().enumerate() {
+            strip(ui, s, n, scroll_area.right() + w * i as f32, bottom, f, &ly);
+        }
+        ui.c.fill_rect(Rect::new(scroll_area.right() - 1.0, client.y, 2.0, client.h), ui.t.s(0x1a1e20));
+        ui.c.pop_clip();
+    }
+    strip(ui, s, 0, sr.x + 44.0, bottom, f, &ly);
 
     // Horizontal scroll bar under the strips.
-    let sb = Rect::new(area.x + 13.0, bottom - 14.0, area.w - 20.0, 9.0);
-    super::scrollbar(ui, sb, false, s.mixer_scroll, area.w, (f32::from(inserts) + 1.0) * STRIP_W, crate::app::Scroll::MixerX);
-    chevron(ui, area.x + 5.0, bottom - 9.5, false, ui.t.s(0x5d6366));
+    let sb = Rect::new(scroll_area.x + 13.0, bottom - 14.0, scroll_area.w - 20.0, 9.0);
+    super::scrollbar(ui, sb, false, s.mixer_scroll, scroll_area.w, (order.len() as f32 + 1.0) * w, crate::app::Scroll::MixerX);
+    chevron(ui, scroll_area.x + 5.0, bottom - 9.5, false, ui.t.s(0x5d6366));
 
-    slot_panel(ui, s, Rect::new(r.right() - panel_w, r.y, panel_w, r.h));
+    if insp_w > 0.0 {
+        inspector(ui, s, Rect::new(strips.right(), client.y, insp_w, client.h));
+    }
+    slot_panel(ui, s, pr);
     resize_zones(ui, s, Win::Mixer, outer);
+}
+
+/// Track inspector (Options > View, title-bar button; Lemon Studio choice of contents): the selected track's settings
+/// and connections as text.
+fn inspector(ui: &mut Ui, s: &State, r: Rect) {
+    ui.c.fill_rect(r, ui.t.s(0x1d1f21));
+    ui.c.fill_rect(Rect::new(r.x, r.y, 1.0, r.h), ui.t.s(0x141618));
+    ui.hit(r, Action::Swallow, "Track inspector");
+    let n = s.selected_mixer;
+    let Some(m) = mx::track(s, n) else { return };
+    let names = |v: Vec<u16>| if v.is_empty() { "-".to_string() } else { v.into_iter().map(|t| mx::name(s, t)).collect::<Vec<_>>().join(", ") };
+    let into: Vec<u16> = s.project.mixer.iter().filter(|o| o.index != n && o.routes.contains(&n)).map(|o| o.index).collect();
+    let chans = s.project.channels.iter().filter(|c| c.mixer_track == n).count();
+    let fx = m.slots.iter().filter(|p| p.is_some()).count();
+    let lines = [
+        ("Volume", fader_db_text(m.volume.unwrap_or(0.8))),
+        ("Panning", crate::knobs::pan_text(m.pan.unwrap_or(0.0) as f32)),
+        ("Stereo", mx::sep_text(m.stereo_separation.unwrap_or(0.0)).replace("Stereo separation: ", "")),
+        ("State", if m.enabled { "On".into() } else { "Muted".into() }),
+        ("Polarity", if m.polarity { "Reversed".into() } else { "Normal".into() }),
+        ("Left / right", if m.swap { "Swapped".into() } else { "Normal".into() }),
+        ("Sends to", names(m.routes.clone())),
+        ("Receives", names(into)),
+        ("Channels", chans.to_string()),
+        ("Effects", format!("{fx} of 10")),
+        ("EQ gains", m.eq.iter().map(|b| format!("{:+.1}", f64::from(b[0]) / 100.0)).collect::<Vec<_>>().join(" / ")),
+    ];
+    ui.c.push_clip(r);
+    ui.c.text_clip(Font::new(17), r.x + 8.0, r.y + 6.0, r.w - 16.0, ui.t.tx(0xd4dade), &mx::name(s, n));
+    let mut y = r.y + 34.0;
+    for (k, v) in lines {
+        ui.c.text_clip(Font::new(13), r.x + 8.0, y, r.w - 16.0, ui.t.s(0x7f868a), k);
+        ui.c.text_clip(Font::new(15), r.x + 8.0, y + 14.0, r.w - 16.0, ui.t.tx(0xc9d0d4), &v);
+        y += 36.0;
+    }
+    ui.c.pop_clip();
 }
 
 fn title_tools(ui: &mut Ui, s: &State, r: Rect) {
@@ -203,34 +262,40 @@ fn title_tools(ui: &mut Ui, s: &State, r: Rect) {
     let ob = Rect::new(r.x + 3.0, y - 9.0, 16.0, 18.0);
     let hov = ui.hit(ob, Action::Mix(MHit::Options), "Mixer options");
     chevron(ui, r.x + 11.0, y, true, if hov { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
-    // View buttons (multi-touch, waveforms, extra properties, track inspector): not available yet, greyed out (drawn
-    // in their colours faded into the title bar, like `Ui::veil`; a veil would show over the bar's gradient).
+    // View buttons: multi-touch is not available yet (greyed out: drawn in its colour faded into the title bar, like
+    // `Ui::veil`; a veil would show over the bar's gradient); waveforms, extra properties and the track inspector
+    // switch their view, drawn in their colours when on and grey when off.
     let bg = ui.t.window_title;
     let dim = |c: Color| c.mix(bg, f32::from(crate::app::OFF_VEIL) / 255.0);
-    for (icon, dx, name) in [(Icon::Touch, 37.0, "Multi-touch control"), (Icon::Plug, 61.0, "View waveforms")] {
-        let b = Rect::new(r.x + dx - 9.0, y - 9.0, 18.0, 18.0);
-        ui.off(b, name);
-        icons::draw(ui.c, icon, b.inset(1.0), dim(ui.t.tx(0xc4ccd0)));
-    }
-    ui.off(Rect::new(r.x + 76.0, y - 9.0, 16.0, 18.0), "Extra volume / stereo properties");
-    ui.off(Rect::new(r.x + 92.0, y - 9.0, 15.0, 18.0), "Track inspector");
+    let b = Rect::new(r.x + 37.0 - 9.0, y - 9.0, 18.0, 18.0);
+    ui.off(b, "Multi-touch control");
+    icons::draw(ui.c, Icon::Touch, b.inset(1.0), dim(ui.t.tx(0xc4ccd0)));
+    let view = s.mixer.view;
+    let off_c = ui.t.tx(0x6f787d);
+    let b = Rect::new(r.x + 61.0 - 9.0, y - 9.0, 18.0, 18.0);
+    let hov = ui.hit(b, Action::Mix(MHit::View(mx::VIEW_WAVES)), "View waveforms");
+    let c = if hov { ui.t.tx(0xffffff) } else if view.waveforms { ui.t.accent } else { off_c };
+    icons::draw(ui.c, Icon::Plug, b.inset(1.0), c);
+    let he = ui.hit(Rect::new(r.x + 76.0, y - 9.0, 16.0, 18.0), Action::Mix(MHit::View(mx::VIEW_EXTRA)), "Extra volume / stereo properties");
+    let hi = ui.hit(Rect::new(r.x + 92.0, y - 9.0, 15.0, 18.0), Action::Mix(MHit::View(mx::VIEW_INSPECTOR)), "Track inspector");
+    let pick = |hov: bool, on: bool, c: Color| if hov { ui.t.tx(0xffffff) } else if on { c } else { off_c };
     // Bow-tie (stereo) in blue, layout square in orange, then "+" and the view combo.
     let mut g = Glyph::new();
     let cx = r.x + 85.0;
     g.polygon(&[(cx - 8.0, y - 6.0), (cx - 1.0, y), (cx - 8.0, y + 6.0)]).polygon(&[(cx + 8.0, y - 6.0), (cx + 1.0, y), (cx + 8.0, y + 6.0)]);
     g.rect(cx - 8.5, y - 6.0, 1.5, 12.0);
-    ui.c.glyph(dim(Color::rgb(0x5fb6f0)), &g);
+    ui.c.glyph(pick(he, view.extra, Color::rgb(0x5fb6f0)), &g);
     let mut g = Glyph::new();
     g.frame(Rect::new(r.x + 93.0, y - 6.0, 12.0, 12.0), 1.6);
-    ui.c.glyph(dim(ui.t.h(0xf3b234)), &g);
-    ui.c.fill_rect(Rect::new(r.x + 101.5, y - 4.5, 2.0, 9.0), dim(Color::rgb(0xd03a2a)));
+    ui.c.glyph(pick(hi, view.inspector, ui.t.h(0xf3b234)), &g);
+    ui.c.fill_rect(Rect::new(r.x + 101.5, y - 4.5, 2.0, 9.0), pick(hi, view.inspector, Color::rgb(0xd03a2a)));
     let pb = Rect::new(r.x + 109.0, y - 8.0, 16.0, 16.0);
     let hov = ui.hit(pb, Action::Mix(MHit::AddAfter), "Add a new track after the selected track");
     icons::draw(ui.c, Icon::Plus, Rect::new(r.x + 110.0, y - 7.0, 14.0, 14.0), if hov { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
-    let lb = Rect::new(r.x + 130.0, r.y + 2.0, 50.0, 20.0);
+    let lb = Rect::new(r.x + 130.0, r.y + 2.0, 96.0, 20.0);
     let hov = ui.hit(lb, Action::Mix(MHit::Layout), "Mixer layout");
-    let _ = s;
-    ui.c.text(Font::new(17), r.x + 134.0, r.y + 2.0, if hov { ui.t.tx(0xffffff) } else { ui.t.tx(0xb8c4cb) }, "Wide");
+    let name = mx::LAYOUTS.get(usize::from(s.mixer.layout)).copied().unwrap_or("Wide");
+    ui.c.text_clip(Font::new(17), r.x + 134.0, r.y + 2.0, 92.0, if hov { ui.t.tx(0xffffff) } else { ui.t.tx(0xb8c4cb) }, name);
 }
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
@@ -302,7 +367,9 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let track = s.project.mixer.iter().find(|m| m.index == n);
     let selected = s.selected_mixer == n;
     let also = !selected && mx::is_selected(s, n);
-    let (kx, mx, sx) = (left + 22.0, left + 32.0, left + 12.0);
+    // Columns at their measured places in a Wide strip, in proportion in the other layouts.
+    let w = ly.w;
+    let (kx, mx, sx) = (left + w / 2.0, left + w * 32.0 / 44.0, left + w * 12.0 / 44.0);
     let _ = f;
 
     // Body and the strip divider.
@@ -311,20 +378,24 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let lemon = super::lemon(ui);
     if lemon {
         // Lemon (spec: ui/lemon-design.md §8): each strip is a rounded card on the dark gap colour.
-        let card = Rect::new(left, ly.y(HEAD_Y1) + 1.0, STRIP_W, bottom - ly.y(HEAD_Y1) - 1.0);
+        let card = Rect::new(left, ly.y(HEAD_Y1) + 1.0, w, bottom - ly.y(HEAD_Y1) - 1.0);
         ui.c.fill_rect(card, ui.t.s(0x131517));
         ui.c.fill_rrect(Rect::new(card.x + 1.5, card.y + 1.0, card.w - 3.0, card.h - 4.0), lk::r_panel(t), body);
     } else {
-        ui.c.fill_rect(Rect::new(left, ly.y(HEAD_Y1) + 1.0, STRIP_W, bottom - ly.y(HEAD_Y1) - 1.0), body);
-        ui.c.fill_rect(Rect::new(left + STRIP_W - 1.0, ly.y(HEAD_Y1) + 1.0, 1.0, bottom - ly.y(HEAD_Y1) - 1.0), ui.t.s(0x1c1f21));
+        ui.c.fill_rect(Rect::new(left, ly.y(HEAD_Y1) + 1.0, w, bottom - ly.y(HEAD_Y1) - 1.0), body);
+        ui.c.fill_rect(Rect::new(left + w - 1.0, ly.y(HEAD_Y1) + 1.0, 1.0, bottom - ly.y(HEAD_Y1) - 1.0), ui.t.s(0x1c1f21));
+    }
+    // A group separator before the track (track menu > Group): a bright rule down its left edge.
+    if s.mixer.seps.contains(&n) {
+        ui.c.fill_rect(Rect::new(left, ly.y(HEAD_Y0), 2.0, bottom - ly.y(HEAD_Y0)), ui.t.tx(0x8c969c));
     }
     // The whole strip selects (Ctrl adds, Shift renames); controls register on top of it (spec: ui/mixer.md §2).
-    ui.hit(Rect::new(left, ly.y(HEAD_Y0), STRIP_W, bottom - ly.y(HEAD_Y0)), Action::Mix(MHit::Strip(n)), mx::name(s, n));
-    let hov = ui.hovering(Rect::new(left, ly.y(HEAD_Y0), STRIP_W, ly.y(PANEL_Y1) - ly.y(HEAD_Y0)));
+    ui.hit(Rect::new(left, ly.y(HEAD_Y0), w, bottom - ly.y(HEAD_Y0)), Action::Mix(MHit::Strip(n)), mx::name(s, n));
+    let hov = ui.hovering(Rect::new(left, ly.y(HEAD_Y0), w, ly.y(PANEL_Y1) - ly.y(HEAD_Y0)));
 
     // Header number (insert strips only; the master's "M" sits in the fixed header band).
     if n != 0 {
-        let hr = Rect::new(left, ly.y(HEAD_Y0), STRIP_W, ly.y(HEAD_Y1) - ly.y(HEAD_Y0) + 1.0);
+        let hr = Rect::new(left, ly.y(HEAD_Y0), w, ly.y(HEAD_Y1) - ly.y(HEAD_Y0) + 1.0);
         ui.c.fill_rect(hr, ui.t.s(0x2b2e30));
         if selected && lemon {
             lk::lit(ui.c, Rect::new(hr.x + 3.0, hr.y + 2.0, hr.w - 6.0, hr.h - 4.0), lk::r_btn(t), false);
@@ -338,12 +409,12 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
             ui.c.pop_clip();
         }
         let c = if selected && lemon { lk::ink_on_lemon() } else if selected || hov { ui.t.tx(0x9aa1a5) } else { ui.t.s(0x6d7275) };
-        ui.c.text_center(Font::new(17), Rect::new(left, ly.y(HEAD_Y0), STRIP_W, 21.0), c, &n.to_string());
+        ui.c.text_center(Font::new(17), Rect::new(left, ly.y(HEAD_Y0), w, 21.0), c, &n.to_string());
     }
 
     // Dark head panel (name, LED, pan) with a rounded bottom.
-    ui.c.fill_rrect(Rect::new(left + 1.0, ly.y(PANEL_Y0), STRIP_W - 2.0, ly.y(PANEL_Y1) - ly.y(PANEL_Y0)), 9.0, ui.t.s(0x1d1f21));
-    ui.c.fill_rect(Rect::new(left + 1.0, ly.y(PANEL_Y0), STRIP_W - 2.0, 12.0), ui.t.s(0x1d1f21));
+    ui.c.fill_rrect(Rect::new(left + 1.0, ly.y(PANEL_Y0), w - 2.0, ly.y(PANEL_Y1) - ly.y(PANEL_Y0)), 9.0, ui.t.s(0x1d1f21));
+    ui.c.fill_rect(Rect::new(left + 1.0, ly.y(PANEL_Y0), w - 2.0, 12.0), ui.t.s(0x1d1f21));
 
     // Meter slot with its tick marks; the selected strip gets a green frame.
     let meter = Rect::new(mx - 7.5, ly.y(METER_Y0), 16.0, ly.y(METER_Y1) - ly.y(METER_Y0));
@@ -372,6 +443,21 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         ui.c.stroke_rrect(Rect::new(meter.x - 1.0, meter.y - 2.0, meter.w + 2.0, meter.h + 4.0), if lemon { lk::r_btn(t) } else { 1.0 }, 2.0, t.accent);
     }
 
+    // Waveform view: the strip's recent peaks, newest at the top, mirrored about the name column's centre.
+    let name_w = (mx - 7.5 - left - 4.0).clamp(10.0, 20.0);
+    if s.mixer.view.waveforms {
+        if let Some(h) = s.mixer.waves.get(usize::from(n)) {
+            let wc = Rect::new(left + 2.0, ly.y(METER_Y0), name_w, ly.y(METER_Y1) - ly.y(METER_Y0));
+            let step = wc.h / mx::WAVE_LEN as f32;
+            let c = t.accent.mix(ui.t.s(0x1d1f21), 0.55);
+            for (i, &p) in h.iter().enumerate() {
+                let a = p.min(1.0) * wc.w / 2.0;
+                if a >= 0.5 {
+                    ui.c.fill_rect(Rect::new(wc.cx() - a, wc.y + step * i as f32, 2.0 * a, step.max(1.0)), c);
+                }
+            }
+        }
+    }
     // Name, rotated, reading upward from the bottom of the meter.
     let name = track.and_then(|m| m.name.clone()).unwrap_or_else(|| if n == 0 { "Master".into() } else { format!("Insert {n}") });
     let name_c = track
@@ -380,7 +466,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         .map_or(if selected { ui.t.tx(0xaab2b7) } else if also { ui.t.tx(0xe4e8ea) } else { ui.t.s(0x7f868a) }, |c| {
             if also { c.mix(ui.t.tx(0xffffff), 0.5) } else { c.mix(ui.t.s(0x7f868a), 0.4) }
         });
-    ui.c.push_clip(Rect::new(left + 2.0, ly.y(PANEL_Y0), 20.0, ly.y(METER_Y1) - ly.y(PANEL_Y0)));
+    ui.c.push_clip(Rect::new(left + 2.0, ly.y(PANEL_Y0), name_w, ly.y(METER_Y1) - ly.y(PANEL_Y0)));
     ui.c.text_vertical(Font::new(15), sx - 7.0, meter.bottom() - 1.0, name_c, &name);
     ui.c.pop_clip();
 
@@ -391,7 +477,16 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     ui.hit(Rect::new(kx - 14.0, ly.y(PAN_Y) - 14.0, 28.0, 28.0), Action::Knob(pan), s.knob_text(pan));
     mixer_knob(ui, kx, ly.y(PAN_Y), 10.5, 15.0, s.knob(pan), Some(true));
 
-    // Reverse polarity (⇕) and swap left / right (⇔) buttons, lit when on, then the separation knob (§4).
+    // Reverse polarity (⇕) and swap left / right (⇔) buttons, lit when on, then the separation knob (§4); hidden with
+    // the extra properties view off.
+    if s.mixer.view.extra {
+        extra_props(ui, s, n, sx, ly);
+    }
+    fader_part(ui, s, n, left, bottom, ly);
+}
+
+fn extra_props(ui: &mut Ui, s: &State, n: u16, sx: f32, ly: &Ly) {
+    let track = s.project.mixer.iter().find(|m| m.index == n);
     let (pol, swp) = (track.is_some_and(|m| m.polarity), track.is_some_and(|m| m.swap));
     let pr = Rect::new(sx - 8.0, ly.y(SEP_Y) - 8.0, 16.0, 16.0);
     let hp = ui.hit(pr, Action::Mix(MHit::Polarity(n)), "Reverse polarity");
@@ -409,6 +504,17 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let sep = KnobId::MixSep(n);
     ui.hit(Rect::new(sx - 9.0, ly.y(RING_Y) - 9.0, 18.0, 18.0), Action::Knob(sep), s.knob_text(sep));
     mixer_knob(ui, sx, ly.y(RING_Y), 6.0, 9.5, s.knob(sep), Some(true));
+}
+
+/// The lower part of strip `n`: fader, input / latency / recording (greyed out) and routing.
+fn fader_part(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, ly: &Ly) {
+    let t = ui.t;
+    let track = s.project.mixer.iter().find(|m| m.index == n);
+    let selected = s.selected_mixer == n;
+    let w = ly.w;
+    let (kx, mx, sx) = (left + w / 2.0, left + w * 32.0 / 44.0, left + w * 12.0 / 44.0);
+    let body = if selected { ui.t.s(0x26292b) } else { ui.t.s(0x232527) };
+    let lemon = super::lemon(ui);
 
     // Fader: track, gain marks, handle (green on the selected strip, with the track lit below it).
     let track_y1 = bottom - 99.0;
@@ -529,6 +635,16 @@ fn fader_handle(ui: &mut Ui, cx: f32, cy: f32, selected: bool, hov: bool) {
     os_ui::kit::fader_handle(ui.c, ui.t, cx, cy, selected, os_ui::kit::State::hover(hov));
 }
 
+/// How much the slot panel's rows shrink in a window `h` high (1 at the measured height).
+fn slot_k(h: f32) -> f32 {
+    ((h - 125.0 - 15.0) / 503.0).clamp(0.3, 1.0)
+}
+
+/// Height of one effect slot row in the slot panel of mixer window `r`.
+pub fn slot_pitch(r: Rect) -> f32 {
+    33.0 * slot_k(r.h)
+}
+
 fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
     ui.c.fill_rect(r, ui.t.s(0x2e3133));
@@ -551,7 +667,7 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     // Squish: the slot rows and the equalizer graph shrink with the height (the knob rows under
     // the graph are dropped when they no longer fit); the top and bottom rows keep their size.
     let room = r.h - 125.0;
-    let kp = ((room - 15.0) / 503.0).clamp(0.3, 1.0);
+    let kp = slot_k(r.h);
     let knobs = room >= 579.0;
     let q = kp.max(0.55);
     // Input row: EQ glyph, "(none)" combo, latency clock. Audio inputs are not available yet: greyed out.
@@ -601,10 +717,12 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     let sep = r.y + 61.0 + 330.0 * kp;
     ui.c.fill_rect(Rect::new(r.x, sep, r.w, 1.0), ui.t.s(0x1f2224));
 
-    // Equalizer: response graph, three band gain faders, band knobs. Editing the track equalizer is not available
-    // yet (a project's stored EQ plays, but is not shown here): the whole section is greyed out.
+    // Equalizer (spec: audio/mixer.md "Equaliser"): the response graph, a gain fader per band (low shelf, peaking,
+    // high shelf) and the bands' frequency and width knobs. They are knobs of the model's `eq`: drag, wheel, middle
+    // click (default) and right click (automation clip) as for the other mixer knobs.
+    let eqv = track.map_or(os_model::EQ_DEFAULT, |m| m.eq);
     let eq = Rect::new(r.x + 4.0, sep + 11.0, 146.0, 173.0 * kp);
-    ui.off(eq, "Track equalizer");
+    ui.hit(eq, Action::Swallow, "Track equalizer");
     if super::lemon(ui) {
         lk::outlined(ui.c, eq, lk::r_btn(t), ui.t.s(0x1f2224), ui.t.s(0x272a2c));
     } else {
@@ -614,36 +732,56 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     for k in 1..5 {
         ui.c.fill_rect(Rect::new(eq.x + 14.0 + 31.0 * k as f32, eq.y + 1.0, 1.0, eq.h - 2.0), ui.t.s(0x2b2e30));
     }
-    ui.c.fill_rect(Rect::new(eq.x + 1.0, eq.cy() - 1.0, eq.w - 2.0, 2.0), ui.t.tx(0xc9cfd3));
-    for k in 0..3 {
-        let fx = r.x + 162.0 + 22.0 * k as f32;
+    // ±18 dB over the graph's height, 20 Hz to 20 kHz across it (log).
+    let db_y = |db: f64| eq.cy() - (db / 18.0).clamp(-1.0, 1.0) as f32 * (eq.h / 2.0 - 4.0);
+    let hz_x = |hz: f64| eq.x + 1.0 + (eq.w - 2.0) * ((hz / 20.0).log10() / 3.0).clamp(0.0, 1.0) as f32;
+    ui.c.fill_rect(Rect::new(eq.x + 1.0, eq.cy(), eq.w - 2.0, 1.0), ui.t.s(0x3a3e41));
+    let steps = 72;
+    let curve: Vec<(f32, f32)> = (0..=steps)
+        .map(|i| {
+            let hz = 20.0 * 1000f64.powf(f64::from(i) / f64::from(steps));
+            (hz_x(hz), db_y(mx::eq_response(&eqv, hz)))
+        })
+        .collect();
+    ui.c.push_clip(eq.inset(1.0));
+    ui.c.polyline(&curve, 2.0, ui.t.tx(0xc9cfd3));
+    let band_c = [Color::rgb(0x5fb6f0), t.accent, ui.t.h(0xf3b234)];
+    for (b, band) in eqv.iter().enumerate() {
+        ui.c.fill_circle(hz_x(mx::eq_hz(band[1])), db_y(f64::from(band[0]) / 100.0), 3.0, band_c[b]);
+    }
+    ui.c.pop_clip();
+    for k in 0..3u8 {
+        let fx = r.x + 162.0 + 22.0 * f32::from(k);
         ui.c.fill_rect(Rect::new(fx - 2.0, eq.y + 1.0, 4.0, eq.h - 2.0), ui.t.s(0x17191b));
         ui.c.fill_rect(Rect::new(fx - 9.0, eq.y + 36.0 * kp, 18.0, 1.0), ui.t.s(0x3a3e41));
         ui.c.fill_rect(Rect::new(fx - 9.0, eq.y + 136.0 * kp, 18.0, 1.0), ui.t.s(0x3a3e41));
-        let h = Rect::new(fx - 6.0, eq.cy() - 6.0, 12.0, 13.0);
+        ui.c.fill_rect(Rect::new(fx - 9.0, eq.cy(), 18.0, 1.0), ui.t.s(0x111315));
+        let id = KnobId::MixEq(n, k, 0);
+        let hov = ui.hit(Rect::new(fx - 9.0, eq.y, 18.0, eq.h), Action::Knob(id), s.knob_text(id));
+        let gain = f64::from(eqv[usize::from(k)][0]) / 1800.0;
+        let h = Rect::new(fx - 6.0, eq.cy() - 6.5 - gain as f32 * (eq.h / 2.0 - 8.0), 12.0, 13.0);
         if super::lemon(ui) {
             ui.c.fill_rrect(h.outset(1.0), lk::r_small(t), ui.t.s(0x121416));
-            ui.c.fill_rrect(h, lk::r_small(t) - 1.0, ui.t.s(0x4a4e51));
+            ui.c.fill_rrect(h, lk::r_small(t) - 1.0, if hov { ui.t.s(0x5e6265) } else { ui.t.s(0x4a4e51) });
         } else {
             ui.c.fill_rrect(h.outset(1.0), 2.0, ui.t.s(0x121416));
-            ui.c.fill_rect_gradient(h, ui.t.s(0x5e6265), ui.t.s(0x2a2d30), 2.0);
+            ui.c.fill_rect_gradient(h, if hov { ui.t.s(0x767b7e) } else { ui.t.s(0x5e6265) }, ui.t.s(0x2a2d30), 2.0);
         }
-        ui.c.fill_rect(Rect::new(fx - 9.0, eq.cy(), 18.0, 1.0), ui.t.s(0x111315));
-        ui.off(Rect::new(fx - 9.0, eq.y, 18.0, eq.h), ["EQ band 1 (low shelf) level", "EQ band 2 (peaking) level", "EQ band 3 (high shelf) level"][k]);
+        ui.c.fill_rect(Rect::new(h.x + 2.0, h.cy(), h.w - 4.0, 1.0), band_c[usize::from(k)]);
     }
     let ly = eq.bottom() + 8.0;
     if knobs {
         ui.c.text(Font::new(17), r.x + 4.0, ly, ui.t.tx(0xa9b2b7), "Equalizer");
     }
-    for row in 0..2 {
+    for row in 0..2u8 {
         if !knobs {
             break;
         }
-        for k in 0..3 {
-            let (kx, ky) = (r.x + 162.0 + 22.0 * k as f32, ly + 20.0 + 20.0 * row as f32);
-            ui.off(Rect::new(kx - 9.0, ky - 9.0, 18.0, 18.0), if row == 0 { "EQ band frequency" } else { "EQ band width" });
-            let look = os_ui::kit::KnobLook::Mixer { halo: 8.0, arc: true };
-            os_ui::kit::knob(ui.c, ui.t, kx, ky, 7.0, 0.5, true, look, os_ui::kit::State::NORMAL.with_disabled(true));
+        for k in 0..3u8 {
+            let (kx, ky) = (r.x + 162.0 + 22.0 * f32::from(k), ly + 20.0 + 20.0 * f32::from(row));
+            let id = KnobId::MixEq(n, k, 1 + row);
+            ui.hit(Rect::new(kx - 9.0, ky - 9.0, 18.0, 18.0), Action::Knob(id), s.knob_text(id));
+            mixer_knob(ui, kx, ky, 7.0, 8.0, s.knob(id), Some(false));
         }
     }
     let mut g = Glyph::new();
@@ -658,8 +796,6 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
         ui.c.glyph(ui.t.tx(0x8c969c), &g);
     }
     let b = r.bottom();
-    let eq_bottom = if knobs { ly + 50.0 } else { eq.bottom() + 2.0 };
-    ui.veil(Rect::span(r.x, r.right(), sep + 1.0, eq_bottom.min(b - 67.0)), ui.t.s(0x2e3133));
 
     // Output rows at the bottom: audio outputs are not available yet, greyed out.
     ui.c.fill_rect(Rect::new(r.x, b - 66.0, r.w, 1.0), ui.t.s(0x1f2224));

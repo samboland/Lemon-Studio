@@ -28,6 +28,9 @@ pub enum KnobId {
     ChanPan(usize),
     /// Channel rack main swing, 0..100 % (spec: ui/channel-rack.md §7; playback: flp/events/project-info.md).
     Swing,
+    /// Mixer track equaliser: track, band 0..3, setting (0 gain, 1 frequency, 2 width) (model `eq`; spec:
+    /// audio/mixer.md "Equaliser").
+    MixEq(u16, u8, u8),
 }
 
 impl KnobId {
@@ -49,6 +52,8 @@ impl KnobId {
             // spec: ui/channel-rack.md §11 (0.4 % / px volume, 0.8 % / px pan) and §7 (30 px = 17 % swing).
             KnobId::ChanVol(_) | KnobId::ChanPan(_) => 0.004,
             KnobId::Swing => 0.17 / 30.0,
+            // The band gain faders: about their travel for the whole range (Lemon Studio choice).
+            KnobId::MixEq(_, _, 0) => 1.0 / 150.0,
             _ => PER_PX,
         }
     }
@@ -60,6 +65,7 @@ impl KnobId {
             KnobId::ChanVol(_) => 0.78125,
             KnobId::SlotMix(..) => 1.0,
             KnobId::Swing => 0.0,
+            KnobId::MixEq(_, b, f) => crate::mixer::eq_default_value(b, f),
             _ => 0.5,
         }
     }
@@ -96,6 +102,7 @@ impl State {
             KnobId::Swing => f32::from(self.project.swing.unwrap_or(0).min(128)) / 128.0,
             KnobId::MasterVol => f32::from(self.project.main_volume.unwrap_or(os_model::Project::MAIN_VOLUME_DEFAULT).min(16000)) / 16000.0,
             KnobId::MasterPitch => (0.5 + f32::from(self.project.main_pitch.unwrap_or(0)) / 2400.0).clamp(0.0, 1.0),
+            KnobId::MixEq(t, b, f) => crate::mixer::eq_value(self, t, b, f),
         }
     }
 
@@ -159,6 +166,7 @@ impl State {
                 self.project.main_pitch = Some(((v - 0.5) * 2400.0).round() as i16);
                 self.piano.dirty = true;
             }
+            KnobId::MixEq(t, b, f) => crate::mixer::set_eq_value(self, t, b, f, v),
         }
     }
 
@@ -186,6 +194,7 @@ impl State {
                 format!("Channel volume: {:.0}%  {db}  {g:.2}", n * 100.0)
             }
             KnobId::Swing => format!("Main swing: {:.0}%", n * 100.0),
+            KnobId::MixEq(t, b, f) => crate::mixer::eq_text(self, t, b, f),
         }
     }
 }
