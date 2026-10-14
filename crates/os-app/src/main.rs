@@ -34,6 +34,7 @@ mod menu_view;
 mod meters;
 mod metronome;
 mod midi_in;
+mod midi_out;
 mod mixer;
 mod osc3;
 mod monitor;
