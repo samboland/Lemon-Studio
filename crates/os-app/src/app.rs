@@ -2490,6 +2490,7 @@ impl App {
                 self.transport.update(&crate::rack::play_project(&self.state));
             }
         }
+        crate::app_settings::tick(self);
         self.playback_damage();
         self.has_damage()
     }

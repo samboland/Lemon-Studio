@@ -5,6 +5,7 @@
 #![cfg_attr(not(plugin_windows), allow(dead_code))]
 
 mod app;
+mod app_settings;
 mod audio_cfg;
 mod autoscroll;
 #[cfg(test)]

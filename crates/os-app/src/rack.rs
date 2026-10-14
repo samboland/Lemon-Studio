@@ -162,8 +162,7 @@ impl Tab {
 
 /// "C5" for key 60.
 pub fn key_name(k: u16) -> String {
-    const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    format!("{}{}", N[usize::from(k % 12)], k / 12)
+    crate::app_settings::note_name(i32::from(k))
 }
 
 /// A named set of channels (§21).
