@@ -20,6 +20,10 @@ pub enum SAct {
     Body,
     Close,
     Tab(usize),
+    PanelMenu(f32, f32),
+    OnePanel,
+    AllPanels(bool),
+    GoPanel(&'static str),
     /// A working check (radio LED) by its label (`LIVE`).
     Check(&'static str),
     /// A collapsible group header by its title.
@@ -64,6 +68,7 @@ pub struct SettingsUi {
     pub scroll: f32,
     /// Groups whose open state differs from their default.
     pub folded: HashSet<&'static str>,
+    pub one_panel: bool,
     /// Filled when the window opens: output devices, theme files (name, path), selected preset.
     pub devices: Vec<String>,
     pub device: String,
@@ -176,7 +181,7 @@ pub fn tab_for_menu(label: &str) -> Option<usize> {
 pub const W: f32 = 668.0;
 const LABEL: Font = Font::system(11);
 const TABS_B: f32 = 64.0;
-const GX: f32 = 22.0;
+const GX: f32 = 28.0;
 const GW: f32 = 608.0;
 
 /// The window rect: centred initially, movable, and kept inside the workspace height.
@@ -349,13 +354,13 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             gf("Input", false, vec![
                 pair(combo("Multi-button mouse", 136.0, "Optimize for"), Buttons(vec![("Manage shortcuts", 212.0)])),
                 Check("Click-and-hold & special gesture functions", false),
-                Check("Use both mouse buttons in step sequencer", false),
+                Check("Use both mouse buttons in step sequencer", true),
                 Slider("Vertical scrolling speed", 0.5),
                 Slider("Horizontal scrolling speed", 0.5),
                 Check("Invert pencil buttons", false),
             ]),
             gf("Undo history", false, vec![
-                Value("100".into(), "Maximum undo levels"),
+                Value("300".into(), "Maximum undo levels"),
                 Check("Undo knob tweaks", true),
                 Check("Alternate undo mode", true),
                 Check("Put undone recordings in the recycle bin", true),
@@ -579,18 +584,62 @@ fn group_h(gr: &Group, open: bool) -> f32 {
     head + gr.rows.iter().map(row_h).sum::<f32>() + 8.0
 }
 
-fn group_open(st: &SettingsUi, gr: &Group) -> bool {
+pub(crate) fn group_open(st: &SettingsUi, gr: &Group) -> bool {
     !gr.fold || (!gr.closed ^ st.folded.contains(gr.title))
+}
+
+pub(crate) fn set_group_open(st: &mut SettingsUi, gr: &Group, open: bool) {
+    if open == !gr.closed { st.folded.remove(gr.title); } else { st.folded.insert(gr.title); }
+}
+
+pub(crate) fn panel_offset(s: &State, title: &str) -> f32 {
+    let mut y = 0.0;
+    for gr in page(s.settings.tab, s) {
+        if gr.title == title { break; }
+        y += group_h(&gr, group_open(&s.settings, &gr)) + 6.0;
+    }
+    y.min((content_h(s) - page_h(s)).max(0.0))
+}
+
+pub fn panel_menu(s: &State, x: f32, y: f32) -> crate::playlist::Popup {
+    use crate::playlist::{Cmd, Mark, PItem, Popup};
+    let mut items = vec![
+        PItem::head(TABS[s.settings.tab].0),
+        PItem::new("Show only one panel", Cmd::Settings(SAct::OnePanel)).mark(Mark::Check(s.settings.one_panel)),
+        PItem::sep(),
+        PItem::new("Close all panels", Cmd::Settings(SAct::AllPanels(false))),
+        PItem::new("Open all panels", Cmd::Settings(SAct::AllPanels(true))),
+        PItem::head("Go to panel"),
+    ];
+    if s.settings.one_panel { items[4].enabled = false; }
+    let mut groups = page(s.settings.tab, s);
+    groups.sort_by_key(|gr| gr.title);
+    items.extend(groups.iter().filter(|gr| !gr.title.is_empty()).map(|gr|
+        PItem::new(gr.title, Cmd::Settings(SAct::GoPanel(gr.title)))));
+    Popup { x, y, items, sub: None }
+}
+
+fn settings_combo(ui: &mut Ui, r: Rect, text: &str, font: Font, hover: bool) {
+    if super::lemon(ui) {
+        kit::combo(ui.c, ui.t, r, text, font, kit::State::hover(hover));
+        return;
+    }
+    let t = ui.t;
+    kit::bordered(ui.c, r, 2.0, t.s(0x101112), t.s(0x141516));
+    ui.c.fill_rect_gradient(r.inset(1.0), t.s(0x1a1b1c), t.s(0x0a0b0c), 1.0);
+    let lh = ui.c.line_height(font);
+    ui.c.text_clip(font, r.x + 4.0, (r.cy() - lh / 2.0).round(), r.w - 18.0, t.text, text);
+    kit::chevron(ui.c, r.right() - 7.0, r.cy(), 3.0, Dir::Right, t.text_dim);
 }
 
 /// Total content height of the current page (for scrolling).
 pub fn content_h(s: &State) -> f32 {
-    page(s.settings.tab, s).iter().map(|gr| group_h(gr, group_open(&s.settings, gr)) + 6.0).sum::<f32>() + 16.0
+    page(s.settings.tab, s).iter().map(|gr| group_h(gr, group_open(&s.settings, gr)) + 6.0).sum::<f32>() + 20.0
 }
 
 /// Visible page height.
 pub fn page_h(s: &State) -> f32 {
-    rect(s).h - TABS_B - 15.0
+    rect(s).h - TABS_B - 5.0
 }
 
 pub fn paint(ui: &mut Ui, s: &State) {
@@ -598,18 +647,28 @@ pub fn paint(ui: &mut Ui, s: &State) {
     let outer = rect(s);
     let t = ui.t;
     ui.hit(outer, Action::Settings(SAct::Body), "");
-    ui.c.fill_rrect(outer.outset(4.0), 6.0, Color::rgb(0).with_alpha(50));
-    let r = kit::float_frame(ui.c, t, outer);
     let lemon = super::lemon(ui);
+    let r = if lemon {
+        lk::outlined(ui.c, outer, lk::r_panel(t), t.s(0x1c1e21), t.window_title);
+        outer.inset(1.0)
+    } else {
+        ui.c.fill_rect(outer, t.s(0x1c1e21));
+        ui.c.fill_rect(outer.inset(1.0), t.window_title);
+        outer.inset(1.0)
+    };
     let (_, title, _) = TABS[st.tab.min(TABS.len() - 1)];
-    super::window_frame(ui, Win::Settings, r, "", 28.0, false);
-    ui.c.text(Font::system(13), r.x + 20.0, r.y + 4.0, t.text_dim, &format!("Settings - {title}"));
+    super::window_frame_ex(ui, Win::Settings, r, "", 28.0, false, true);
+    ui.c.text(Font::system(13).bold(), r.x + 24.0, r.y + 4.0, t.text_dim, &format!("Settings - {title}"));
     ui.c.icon(&os_ui::tabler::SETTINGS, Rect::new(r.x + 2.0, r.y + 5.0, 14.0, 14.0), t.text_dim);
     let x = Rect::new(r.right() - 23.0, r.y + 3.0, 17.0, 17.0);
     let hov = ui.hit(x, Action::Settings(SAct::Close), "Close");
     ui.c.icon(&os_ui::tabler::X, x.inset(3.0), if hov { t.glyph } else { t.text });
-    // Tabs use the same selected button style as other windows.
-    let font = Font::system(13);
+    // Classic tabs follow the FL Settings tab shape and selection color.
+    let font = Font::system(12).bold();
+    let menu = Rect::new(r.right() - 23.0, r.y + 34.0, 17.0, 26.0);
+    let hov = ui.hit(menu, Action::Settings(SAct::PanelMenu(menu.x, menu.bottom())), "Panel options");
+    kit::button(ui.c, t, menu, kit::State::hover(hov));
+    kit::chevron(ui.c, menu.cx(), menu.cy(), 2.5, Dir::Down, t.text);
     let rects = tab_rects(ui, r);
     for (i, &(label, _, _)) in TABS.iter().enumerate() {
         let tr = rects[i];
@@ -624,7 +683,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
                 ui.c.fill_rrect(pill, lk::r_btn(t), if hov { t.button_hi } else { body });
             }
         } else {
-            let body = if on { t.s(0x101112) } else if hov { t.button_hi } else { t.s(0x1a1b1c) };
+            let body = if on { t.s(0x161819) } else if hov { t.button_hi } else { t.s(0x242627) };
             ui.c.fill_rrect(tr, 5.0, body);
             ui.c.fill_polygon(&[(tr.x, tr.bottom() - 5.0), (tr.x, tr.bottom()), (tr.right() + 14.0, tr.bottom()),
                 (tr.right(), tr.y + 5.0), (tr.right() - 5.0, tr.y + 5.0), (tr.right() - 5.0, tr.bottom() - 5.0)], body);
@@ -632,7 +691,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         let col = if on && lemon {
             lk::ink_on_lemon()
         } else if on {
-            t.accent
+            Color::rgb(0x00afff)
         } else if hov {
             t.glyph
         } else {
@@ -647,8 +706,9 @@ pub fn paint(ui: &mut Ui, s: &State) {
     let area = Rect::new(r.x + 1.0, r.y + TABS_B + 1.0, r.w - 2.0, r.h - TABS_B - 3.0);
     let total = content_h(s);
     let scroll = st.scroll.min((total - area.h).max(0.0)).max(0.0);
+    ui.c.fill_rect(area, t.s(0x343638));
     ui.c.push_clip(area);
-    let mut y = area.y + 11.0 - scroll;
+    let mut y = area.y + 15.0 - scroll;
     for gr in page(st.tab, s) {
         let open = group_open(st, &gr);
         let h = group_h(&gr, open);
@@ -666,10 +726,10 @@ pub fn paint(ui: &mut Ui, s: &State) {
 
 /// Tab rects in window `r`: adaptive padding and space for slanted edges.
 fn tab_rects(ui: &mut Ui, r: Rect) -> Vec<Rect> {
-    let font = Font::system(13);
+    let font = Font::system(12).bold();
     let text: Vec<f32> = TABS.iter().map(|(label, _, _)| ui.c.text_width(font, label)).collect();
     let groups = TABS.windows(2).filter(|tabs| tabs[0].2 != tabs[1].2).count() as f32;
-    let padding = ((r.w - 12.0 - text.iter().sum::<f32>() - 14.0 * (TABS.len() - 1) as f32 - 8.0 * groups) / TABS.len() as f32).clamp(4.0, 16.0);
+    let padding = ((r.w - 52.0 - text.iter().sum::<f32>() - 14.0 * (TABS.len() - 1) as f32 - 8.0 * groups) / TABS.len() as f32).clamp(0.0, 16.0);
     let mut x = r.x + 6.0;
     let mut v = Vec::new();
     for (i, &(_, _, grp)) in TABS.iter().enumerate() {
@@ -698,8 +758,8 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
         let tw = ui.c.text_width(f, gr.title);
         let hdr = Rect::new(r.x + 1.0, r.y + 1.0, tw + ui.c.text_width(Font::system(11), gr.note) + 8.0, 19.0);
         if !lemon {
-            ui.c.fill_rect(hdr, t.window_title);
-            ui.c.fill_polygon(&[(hdr.right(), hdr.y), (hdr.right() + 6.0, hdr.y), (hdr.right(), hdr.bottom())], t.window_title);
+            ui.c.fill_rect(hdr, t.s(0x2b2d2f));
+            ui.c.fill_polygon(&[(hdr.right(), hdr.y), (hdr.right() + 6.0, hdr.y), (hdr.right(), hdr.bottom())], t.s(0x2b2d2f));
         }
         ui.c.text(f, r.x + 4.0, r.y + 2.0, if lemon { t.accent } else { t.text }, gr.title);
         if !gr.note.is_empty() {
@@ -761,9 +821,9 @@ fn led(ui: &mut Ui, x: f32, cy: f32, on: bool, hov: bool) {
             lk::outlined(ui.c, b, lk::r_small(t), t.s(0x141516), if hov { t.s(0x4a4c4e) } else { t.s(0x36393a) });
         }
     } else if on {
-        ui.c.fill_circle(x, cy, 5.5, t.h(0x952b15));
-        ui.c.fill_circle(x, cy, 4.2, t.h(0xf09672));
-        ui.c.fill_circle(x - 1.0, cy - 1.2, 1.6, t.h(0xffd2bc));
+        ui.c.fill_circle(x, cy, 5.5, Color::rgb(0x426580));
+        ui.c.fill_circle(x, cy, 4.2, t.text);
+        ui.c.fill_circle(x - 1.0, cy - 1.2, 1.6, t.text.shade(0.25));
     } else {
         ui.c.fill_circle(x, cy, 5.5, if hov { t.s(0x6a6c6e) } else { t.s(0x58595a) });
         ui.c.fill_circle(x, cy, 4.2, t.s(0x36393a));
@@ -773,7 +833,7 @@ fn led(ui: &mut Ui, x: f32, cy: f32, on: bool, hov: bool) {
 /// Greys out what was just drawn in `r` on a group body.
 fn grey(ui: &mut Ui, r: Rect) {
     let bg = ui.t.s(0x25272a);
-    ui.veil(r, bg);
+    ui.c.fill_rect(r, bg.with_alpha(if super::lemon(ui) { 95 } else { 20 }));
 }
 
 /// The hint name of a control: its label, else its group's title.
@@ -819,7 +879,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         Row::Combo(v, w, label) => {
             let b = Rect::new(x0, y + 3.0, *w, 21.0);
             ui.off(b, name_of(label, group));
-            kit::combo(ui.c, t, b, v, f, kit::State::NORMAL);
+            settings_combo(ui, b, v, f, false);
             let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, label);
             grey(ui, Rect::new(b.x, b.y, b.w + 8.0 + lw, b.h));
         }
@@ -867,7 +927,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                 ui.c.fill_rrect(Rect::new(tr.x, tr.y, tr.w * v, tr.h), 2.0, t.accent);
             } else {
                 ui.c.fill_rect(tr, t.s(0x161819));
-                ui.c.fill_rect(Rect::new(tr.x, tr.y, tr.w * v, tr.h), t.h(0xc8312e));
+                ui.c.fill_rect(Rect::new(tr.x, tr.y, tr.w * v, tr.h), if label.is_empty() { t.text_dim } else { Color::rgb(0xe60000) });
             }
             if !label.is_empty() {
                 let hx = tr.x + tr.w * v;
@@ -965,7 +1025,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         Row::Gap(_) => {}
         Row::Pair(a, b) => {
             paint_row_at(ui, s, group, a, g, y, h, 0.0);
-            paint_row_at(ui, s, group, b, g, y, h, 304.0);
+            paint_row_at(ui, s, group, b, g, y, h, if group == "Input" { 370.0 } else if group == "Display" { 288.0 } else { 304.0 });
         }
         Row::Folders(list) => folders(ui, list, Rect::new(x0 - 4.0, y + 2.0, g.w - 16.0, h - 6.0)),
         Row::Prefer(cur) => prefer(ui, *cur, x0, y, ty),
@@ -1170,6 +1230,6 @@ fn value_red(ui: &mut Ui, b: Rect, v: &str) {
         ui.c.text_center(Font::new(15), b, brand::HIGHLIGHT, v);
         return;
     }
-    kit::bordered(ui.c, b, 3.0, t.h(0x5a2229), t.h(0x863c44));
-    ui.c.text_center(Font::new(15), b, t.tx(0xf2e4e6), v);
+    kit::bordered(ui.c, b, 2.0, Color::rgb(0x5a2229), Color::rgb(0x863c44));
+    ui.c.text_center(Font::system(15), b, t.text, v);
 }

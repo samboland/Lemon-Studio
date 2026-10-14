@@ -1148,8 +1148,19 @@ fn any_enabled(items: &[pl::PItem]) -> bool {
 
 /// Draw a popup list at (x, y) kept on screen; returns its rect and each item's row rect.
 fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, sub: bool) -> (Rect, Vec<Rect>) {
-    let t = ui.t;
-    let font = Font::new(14);
+    let settings = !super::lemon(ui) && items.iter().any(|it| matches!(it.cmd, pl::Cmd::Settings(_)));
+    let mut colors = ui.t.clone();
+    if settings {
+        colors.menu_pop = Color::rgb(0x808080);
+        colors.menu_pop_border = Color::rgb(0x000000);
+        colors.menu_pop_head = Color::rgb(0x606064);
+        colors.menu_pop_head_text = Color::rgb(0xafafb3);
+        colors.menu_pop_text = Color::rgb(0x000000);
+        colors.menu_pop_dim = Color::rgb(0x55555a);
+        colors.menu_pop_hi = Color::rgb(0x999999);
+    }
+    let t = &colors;
+    let font = if settings { Font::system(11) } else { Font::new(14) };
     let mut lw: f32 = 80.0;
     let mut kw: f32 = 0.0;
     for it in items {
@@ -1196,7 +1207,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
             } else {
                 ui.c.fill_rect(rr, t.menu_pop_head);
             }
-            ui.c.text(Font::new(12), rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, &it.label);
+            ui.c.text(if settings { Font::system(9) } else { Font::new(12) }, rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, &it.label);
             continue;
         }
         let action = if sub { Action::PlPopupSub(i) } else { Action::PlPopup(i) };

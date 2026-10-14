@@ -31,7 +31,7 @@ pub enum Face {
     Ui,
     /// The system's light UI face (Segoe UI Light on Windows): the song position display.
     Light,
-    /// Regular system UI face for compact dialogs.
+    /// Semibold system UI face for compact dialogs.
     System,
 }
 
@@ -64,7 +64,7 @@ impl Font {
     pub const fn new(size: u16) -> Font {
         Font { face: Face::Ui, size, width: 0, bold: false, italic: false, natural: true }
     }
-    /// Regular system UI text, with natural advances.
+    /// Semibold system UI text, with natural advances.
     pub const fn system(size: u16) -> Font {
         Font { face: Face::System, size, width: 0, bold: false, italic: false, natural: true }
     }
@@ -310,7 +310,8 @@ mod gdi {
                     match (f.face, f.bold) {
                         (_, true) => 700,
                         (Face::Light, false) => 300,
-                        (Face::Ui | Face::System, false) => 400,
+                        (Face::Ui, false) => 400,
+                        (Face::System, false) => 600,
                     },
                     u32::from(f.italic),
                     0,

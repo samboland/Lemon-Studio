@@ -198,6 +198,7 @@ pub enum Mark {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
     Nothing,
+    Settings(crate::views::settings::SAct),
     /// Plugin window menu > Detached: rack row, new state (spec: ui/plugin-window.md "Docking and the window menu").
     #[cfg_attr(not(windows), allow(dead_code))]
     PluginDetach(usize, bool),
@@ -2889,6 +2890,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
     // Commands that need the whole app.
     match cmd {
         Cmd::Browser(b) => return app.browser_cmd(b),
+        Cmd::Settings(a) => { app.settings_act(a); return None; }
         Cmd::Plugin(c) => return crate::plugin_menu::run(app, c),
         Cmd::Rack(c) => return crate::rack::run(app, c),
         Cmd::Mixer(c) => return crate::mixer::run(app, c),
@@ -2958,7 +2960,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
     let grid_w = grid.map_or(1400.0, |g| g.w);
     let grid_wh = grid.map_or((1400.0, 800.0), |g| (g.w, g.h));
     let msg = match cmd {
-        Cmd::Nothing | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginDetach(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::ContinuousScrolling => None,
+        Cmd::Nothing | Cmd::Settings(_) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginDetach(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::ContinuousScrolling => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),
         Cmd::Tool(t) => {
             s.playlist.tool = t;

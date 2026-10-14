@@ -1021,7 +1021,7 @@ impl App {
                 song_mode: false,
                 menu_open: None,
                 lane_menu: false,
-                settings: views::settings::SettingsUi { native: os_native::settings_shown(), ..Default::default() },
+                settings: views::settings::SettingsUi { one_panel: true, native: os_native::settings_shown(), ..Default::default() },
                 playlist_scroll: (0.0, 0.0),
                 playlist_bar_w: views::playlist::BAR_W,
                 mixer_scroll: 0.0,
@@ -2959,10 +2959,37 @@ impl App {
         }
     }
 
-    fn settings_act(&mut self, a: views::settings::SAct) {
+    pub(crate) fn settings_act(&mut self, a: views::settings::SAct) {
         use views::settings::SAct;
         let st = &mut self.state.settings;
         match a {
+            SAct::PanelMenu(x, y) => {
+                self.state.playlist.popup = if self.state.playlist.popup.as_ref().is_some_and(|p| p.x == x && p.y == y) {
+                    None
+                } else { Some(views::settings::panel_menu(&self.state, x, y)) };
+            }
+            SAct::OnePanel => st.one_panel = !st.one_panel,
+            SAct::AllPanels(open) => {
+                let groups = views::settings::page(st.tab, &self.state);
+                let st = &mut self.state.settings;
+                for gr in groups.iter().filter(|gr| gr.fold) {
+                    views::settings::set_group_open(st, gr, open);
+                }
+                st.scroll = 0.0;
+            }
+            SAct::GoPanel(k) => {
+                let groups = views::settings::page(st.tab, &self.state);
+                let st = &mut self.state.settings;
+                if st.one_panel {
+                    for gr in groups.iter().filter(|gr| gr.fold) {
+                        views::settings::set_group_open(st, gr, gr.title == k);
+                    }
+                } else if let Some(gr) = groups.iter().find(|gr| gr.title == k) {
+                    views::settings::set_group_open(st, gr, true);
+                }
+                let scroll = views::settings::panel_offset(&self.state, k);
+                self.state.settings.scroll = scroll;
+            }
             SAct::Body => {}
             SAct::Close => st.open = false,
             SAct::Combo(label, x, y) => return self.audio_menu(label, x, y),
@@ -3000,8 +3027,13 @@ impl App {
             // Checks and buttons outside `settings::LIVE` are drawn greyed out with an `Action::Placeholder` hit instead.
             SAct::Check(k) => self.state.message = Some(off_text(k)),
             SAct::Group(k) => {
-                if !st.folded.remove(k) {
-                    st.folded.insert(k);
+                let groups = views::settings::page(st.tab, &self.state);
+                let st = &mut self.state.settings;
+                let open = groups.iter().find(|gr| gr.title == k).is_some_and(|gr| !views::settings::group_open(st, gr));
+                for gr in groups.iter().filter(|gr| gr.fold) {
+                    if gr.title == k || (open && st.one_panel) {
+                        views::settings::set_group_open(st, gr, open && gr.title == k);
+                    }
                 }
             }
             // Tiles (spec: ui/lemon-design.md §1): 0 = (Default) = the Lemon design, 1 = the Classic look without a
@@ -6907,6 +6939,40 @@ mod tests {
         app.state.screen = (640.0, 480.0);
         let r = views::settings::rect(&app.state);
         assert!(r.right() <= 640.0 && r.bottom() <= 480.0);
+    }
+
+    #[test]
+    fn settings_panel_menu() {
+        use views::settings::{self, SAct, GENERAL};
+        let mut c = Canvas::new(1920, 1080, 1.0).unwrap();
+        let mut app = App::new(None);
+        app.state.settings.open = true;
+        app.state.settings.tab = GENERAL;
+        frame(&mut app, &mut c, None);
+        let menu = app.hits.iter().find(|h| matches!(h.action, Action::Settings(SAct::PanelMenu(..)))).unwrap().rect;
+        click(&mut app, &mut c, menu);
+        let popup = app.state.playlist.popup.as_ref().unwrap();
+        assert!(popup.items.iter().any(|i| i.label == "Show only one panel"));
+        assert!(!popup.items.iter().find(|i| i.label == "Open all panels").unwrap().enabled);
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            c.pixmap.save_png(std::path::Path::new(&dir).join("settings-panel-menu.png")).unwrap();
+        }
+        crate::playlist::run(&mut app, crate::playlist::Cmd::Settings(SAct::AllPanels(false)));
+        assert!(settings::page(GENERAL, &app.state).iter().all(|gr| !settings::group_open(&app.state.settings, gr)));
+        crate::playlist::run(&mut app, crate::playlist::Cmd::Settings(SAct::GoPanel("Input")));
+        assert!(settings::page(GENERAL, &app.state).iter().all(|gr| settings::group_open(&app.state.settings, gr) == (gr.title == "Input")));
+        crate::playlist::run(&mut app, crate::playlist::Cmd::Settings(SAct::OnePanel));
+        crate::playlist::run(&mut app, crate::playlist::Cmd::Settings(SAct::AllPanels(true)));
+        assert!(settings::page(GENERAL, &app.state).iter().all(|gr| settings::group_open(&app.state.settings, gr)));
+        crate::playlist::run(&mut app, crate::playlist::Cmd::Settings(SAct::GoPanel("Advanced")));
+        assert!(app.state.settings.scroll > 0.0);
+        frame(&mut app, &mut c, None);
+        let r = settings::rect(&app.state);
+        let menu = app.hits.iter().find(|h| matches!(h.action, Action::Settings(SAct::PanelMenu(..)))).unwrap().rect;
+        assert!(menu.right() <= r.right());
+        for hit in &app.hits {
+            if matches!(hit.action, Action::Settings(SAct::Tab(_))) { assert!(hit.rect.right() + 14.0 <= menu.x); }
+        }
     }
 
     #[test]
