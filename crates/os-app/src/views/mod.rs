@@ -182,7 +182,7 @@ pub fn resize_zones(ui: &mut Ui, s: &State, win: Win, r: Rect) {
 }
 
 /// Minimize / maximize / close buttons from `x0` at the title bar of a window at top `y`.
-pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, _normal: Color, _hover: Color) {
+pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, maximized: bool) {
     let mut hovered = None;
     for (i, (hint, action)) in [
         ("Minimize window", Action::MinWin(win)),
@@ -196,7 +196,7 @@ pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, _normal: Color, _h
             hovered = Some(i);
         }
     }
-    kit::window_buttons(ui.c, ui.t, x0, y, hovered);
+    kit::window_buttons(ui.c, ui.t, x0, y, hovered, maximized);
 }
 
 /// Window frame with a title bar (§5); the bar drags the window. `buttons` = draw the window
@@ -267,7 +267,7 @@ pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32
     ui.hit(bar, Action::WinDrag(win), "Drag to move");
     // Minimize / maximize / close glyphs at the right (1862, 1881, 1901 at full width).
     if buttons {
-        window_buttons(ui, win, r.right() - 64.0, r.y, t.text_dim.mix(t.glyph, 0.6), t.glyph);
+        window_buttons(ui, win, r.right() - 64.0, r.y, !flat);
     }
     Rect::new(r.x, r.y + 23.0, r.w, r.h - 23.0)
 }

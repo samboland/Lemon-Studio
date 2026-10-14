@@ -547,7 +547,7 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     let floating = !s.wins[1].maxed && !s.wins[1].mini;
     ui.c.text_clip(font, r.x + 1.0, super::title_y(ui, r, floating), r.w - 70.0, ui.t.tx(0xd4dade), &title);
     ui.hit(Rect::new(r.x, r.y, r.w, 23.0), Action::WinDrag(Win::Mixer), "Drag to move");
-    window_buttons(ui, Win::Mixer, r.right() - 58.0, r.y, ui.t.tx(0xd4dade), ui.t.tx(0xffffff));
+    window_buttons(ui, Win::Mixer, r.right() - 58.0, r.y, s.wins[1].maxed);
     if r.h < 2.0 * TITLE_H {
         return;
     }

@@ -206,6 +206,7 @@ tokens! {
     on_bottom = 0xf59a3c, "'On' button gradient, bottom.";
     on_glyph = 0xb14000, "Glyph on an 'on' button.";
     pill = 0xf7a94c, "Active PAT/SONG pill.";
+    editor_tool_active = 0xffc642, "Active editor tool glyph.";
     pill_text = 0x3b1d00, "Text on the active pill.";
     record = 0xfb655e, "Record dot.";
     tempo_box = 0x3b3f41, "Tempo field.";

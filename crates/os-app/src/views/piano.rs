@@ -282,7 +282,7 @@ fn toolbar(ui: &mut Ui, r: Rect, shift: f32, active: Tool) {
     let ox = r.x - 209.0 + shift;
     let items: [(f32, Icon, &'static str, Option<Action>); 15] = [
         (222.0, Icon::ArrowRight, "Piano roll options", None),
-        (242.0, Icon::MidiControl, "Piano roll tools: quantize, chop, glue, strum, arpeggiate, randomize...", Some(Action::PianoToolsMenu)),
+        (242.0, Icon::Tool, "Piano roll tools: quantize, chop, glue, strum, arpeggiate, randomize...", Some(Action::PianoToolsMenu)),
         (263.0, Icon::Magnet, "Piano roll snap", None),
         (283.0, Icon::Note, "Note properties", None),
         (305.0, Icon::Blend, "Scale and chord helpers", None),
@@ -320,7 +320,7 @@ fn toolbar(ui: &mut Ui, r: Rect, shift: f32, active: Tool) {
             }
             if on { lk::ink_on_lemon() } else { t.glyph }
         } else if on {
-            t.pill
+            t.editor_tool_active
         } else if hov {
             ui.t.tx(0xffffff)
         } else {
@@ -423,6 +423,7 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
     // FL shades keys smoothly across their width. Lemon uses flat keys.
     let lemon = super::lemon(ui);
     let white = Rect::new(k.x, k.y, k.w - 1.0, k.h);
+    let black_w = (k.w * 45.0 / 71.0 * ui.c.scale).floor() / ui.c.scale;
     if lemon {
         ui.c.fill_rect(white, t.key_white);
     } else {
@@ -454,8 +455,8 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
                     ui.c.fill_rect(Rect::new(k.x, y - half, k.w - 1.0, row - 1.0 + half), t.key_c);
                 } else if !lit.contains(&key) {
                     let left = t.key_white_left.shade(-0.16);
-                    ui.c.fill_rect_gradient(Rect::new(k.x, y, 45.0, row - 1.0), left, left, 0.0);
-                    ui.c.fill_rect(Rect::new(k.x + 45.0, y - half, k.w - 46.0, row - 1.0 + half), t.key_c);
+                    ui.c.fill_rect_gradient(Rect::new(k.x, y, black_w, row - 1.0), left, left, 0.0);
+                    ui.c.fill_rect(Rect::new(k.x + black_w, y - half, k.w - black_w - 1.0, row - 1.0 + half), t.key_c);
                 }
                 if row >= 10.0 {
                     ui.c.text_right(Font::new(12), k.right() - 4.0, y + 1.0 + (row - ROW) / 2.0, t.key_label, &key_name(key));
@@ -475,7 +476,7 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
                 ui.c.fill_rrect(Rect::new(k.x - 6.0, y, 51.0, row), 3.0f32.min(row / 2.0), right);
                 continue;
             }
-            key_gradient(ui.c, Rect::new(k.x, y, 45.0, row), left, right);
+            key_gradient(ui.c, Rect::new(k.x, y, black_w, row), left, right);
         }
     }
     ui.c.pop_clip();

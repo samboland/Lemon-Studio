@@ -499,7 +499,7 @@ pub fn tooltip(c: &mut Canvas, t: &Palette, at: (f32, f32), name: &str, caption:
 }
 
 /// Minimize / maximize / close glyphs (drawn with Tabler icons) in a row from `x0`; `hovered` = index under the mouse.
-pub fn window_buttons(c: &mut Canvas, t: &Palette, x0: f32, y: f32, hovered: Option<usize>) -> [Rect; 3] {
+pub fn window_buttons(c: &mut Canvas, t: &Palette, x0: f32, y: f32, hovered: Option<usize>, maximized: bool) -> [Rect; 3] {
     use crate::tabler as tb;
     let mut out = [Rect::default(); 3];
     for (i, icon) in [&tb::MINUS, &tb::SQUARES, &tb::X].into_iter().enumerate() {
@@ -510,7 +510,12 @@ pub fn window_buttons(c: &mut Canvas, t: &Palette, x0: f32, y: f32, hovered: Opt
         } else if hov {
             c.fill_rrect(b, 3.0, if i == 2 { t.record.with_alpha(170) } else { t.button_hi });
         }
-        c.icon(icon, b.inset(2.0), if hov { t.tx(0xffffff) } else { t.text_dim.mix(t.glyph, 0.6) });
+        let ink = if hov { t.tx(0xffffff) } else { t.text_dim.mix(t.glyph, 0.6) };
+        if i == 1 && !maximized {
+            c.stroke_rrect(Rect::new(b.cx() - 4.0, b.cy() - 3.0, 8.0, 6.0), if lemon::on(t) { 1.0 } else { 0.0 }, 1.0, ink);
+        } else {
+            c.icon(icon, b.inset(2.0), ink);
+        }
         out[i] = b;
     }
     out
