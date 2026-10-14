@@ -343,7 +343,7 @@ pub(crate) fn load_folders() -> Vec<std::path::PathBuf> {
     text.lines().map(str::trim).filter(|l| !l.is_empty()).map(std::path::PathBuf::from).collect()
 }
 
-fn save_folders(folders: &[std::path::PathBuf]) {
+pub(crate) fn save_folders(folders: &[std::path::PathBuf]) {
     let Some(p) = folders_file() else { return };
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);

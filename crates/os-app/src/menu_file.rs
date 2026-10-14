@@ -1,4 +1,4 @@
-//! FILE menu entries (`menu_registry` area): new, open, save, export, exit.
+//! FILE menu entries (`menu_registry` area): new, open, save, revert to the last backup (`autosave`), export, exit.
 // spec: ui/menus.md (FILE)
 
 use winit::keyboard::Key;
@@ -8,7 +8,7 @@ use crate::menu_registry::Mods;
 use crate::views::menus::FILE_MENU;
 
 pub fn menu_handles(menu: usize, label: &str) -> bool {
-    menu == FILE_MENU && matches!(label, "New" | "Open..." | "Save" | "Save as..." | "Save new version" | "Export as WAV..." | "Exit")
+    menu == FILE_MENU && matches!(label, "New" | "Open..." | "Save" | "Save as..." | "Save new version" | "Revert to last backup" | "Export as WAV..." | "Exit")
 }
 
 pub fn menu_run(app: &mut App, _menu: usize, label: &str) -> Option<String> {
@@ -50,6 +50,7 @@ pub fn menu_run(app: &mut App, _menu: usize, label: &str) -> Option<String> {
         "Save" => app.save(false),
         "Save as..." => app.save(true),
         "Save new version" => app.save_new_version(),
+        "Revert to last backup" => crate::autosave::revert(app),
         "Export as WAV..." => app.export_wav(),
         "Exit" => app.want_close = true,
         _ => {}

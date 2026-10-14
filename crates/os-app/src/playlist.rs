@@ -27,7 +27,6 @@ pub const MARKER_H: f32 = 17.0;
 pub const EDGE: f32 = 6.0;
 /// Number of tracks (flp playlist.md).
 pub const TRACKS: u16 = 500;
-const UNDO_DEPTH: usize = 200;
 
 /// Playlist tools (§3) and their letters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -960,7 +959,7 @@ pub fn snapshot(s: &mut State) {
     let snap = (clips, markers, tracks, s.project.automations.clone(), stretch);
     let u = &mut s.playlist.undo;
     u.push(snap);
-    if u.len() > UNDO_DEPTH {
+    while u.len() > crate::app_settings::undo_levels() {
         u.remove(0);
     }
 }
@@ -1537,7 +1536,7 @@ pub fn create_automation(s: &mut State, tgt: u32, name: &str, value: f64) -> u16
     let index = s.project.channels.iter().map(|c| c.index + 1).max().unwrap_or(0);
     let (a, b) = match s.playlist.range {
         Some((r0, r1)) if r1 > r0 => (r0, r1),
-        _ => (s.playlist.pos, s.playlist.pos + source_len(s, ClipSource::Pattern(s.pattern)).max(1)),
+        _ => (crate::app_settings::automation_at(s.playlist.pos), crate::app_settings::automation_at(s.playlist.pos) + source_len(s, ClipSource::Pattern(s.pattern)).max(1)),
     };
     let beats = f64::from(b - a) / f64::from(ppq(s));
     s.project.channels.push(Channel {

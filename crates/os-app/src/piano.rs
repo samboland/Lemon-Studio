@@ -7,9 +7,6 @@ use os_ui::Rect;
 use crate::app::State;
 use crate::views::piano::{ROW, TOP_KEY};
 
-/// Undo depth (snapshots of one pattern's notes).
-const UNDO_DEPTH: usize = 200;
-
 /// Piano-roll tools (§9), with their shortcut letters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tool {
@@ -488,7 +485,7 @@ pub fn snapshot(s: &mut State) {
     let controls = controls(s).to_vec();
     s.piano.dirty = true;
     let u = &mut s.piano.undo;
-    if u.len() >= UNDO_DEPTH {
+    while u.len() >= crate::app_settings::undo_levels() {
         u.remove(0);
     }
     u.push((number, notes, controls));

@@ -5,7 +5,9 @@
 #![cfg_attr(not(plugin_windows), allow(dead_code))]
 
 mod app;
+mod app_settings;
 mod audio_cfg;
+mod autosave;
 mod autoscroll;
 #[cfg(test)]
 mod audio_bench;

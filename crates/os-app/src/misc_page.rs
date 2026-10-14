@@ -275,8 +275,7 @@ pub fn range_of(m: M) -> (f32, f32) {
 
 /// Note name ("C5", "F#4"): FL's naming, C5 = MIDI 60.
 pub fn note_name(key: i32) -> String {
-    const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    format!("{}{}", N[key.rem_euclid(12) as usize], key.div_euclid(12))
+    crate::app_settings::note_name(key)
 }
 
 /// The hint value text.
