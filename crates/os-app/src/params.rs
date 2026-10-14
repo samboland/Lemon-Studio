@@ -240,7 +240,7 @@ impl App {
         ui.lists.retain(|k, _| self.plugins.hosted.contains_key(k));
         let mut moved = None;
         let mut automate = Vec::new();
-        let mut stretch = Vec::new();
+        let mut edits = Vec::new();
         for (&key, h) in &self.plugins.hosted {
             // Only an instance with something new is locked, and never waited for: one the audio thread is rendering
             // is read again next tick (its events stay queued).
@@ -265,7 +265,7 @@ impl App {
             for e in p.take_param_events() {
                 if let (true, os_host::ParamEvent::Value(id, v)) = (sampler, &e) {
                     if let Some(x) = ui.lists.get(&key).and_then(|l| l.params.iter().find(|x| x.id == *id)) {
-                        stretch.push((key, x.name.clone(), *v));
+                        edits.push((key, x.name.clone(), *v));
                     }
                 }
                 let (os_host::ParamEvent::Begin(id) | os_host::ParamEvent::Value(id, _)) = e else { continue };
@@ -280,13 +280,13 @@ impl App {
                 }
             }
         }
-        // Lemon Sampler's time-stretch knobs are the channel's own settings: the channel takes the editor's edits, so
-        // its audio clips get their new length (`playlist::fit_audio`), playback and saving follow (ui/playlist.md §9c).
-        for (row, name, v) in stretch {
+        // Lemon Sampler's knobs are the channel's own settings: the channel takes the editor's edits (envelopes, sample
+        // settings and effects, filter, declick, root note and tuning), so saving writes them (`plugins::sampler_param`).
+        // The time-stretch knobs also give its audio clips their new length (`playlist::fit_audio`) and playback follows
+        // (ui/playlist.md §9c).
+        for (row, name, v) in edits {
             let Some(ch) = self.state.project.channels.get_mut(row) else { continue };
-            let mut st = ch.sound.stretch;
-            if crate::plugins::stretch_param(&name, v, &mut st) && st != ch.sound.stretch {
-                ch.sound.stretch = st;
+            if crate::plugins::sampler_param(&name, v, ch) {
                 self.state.piano.dirty = true;
             }
         }
@@ -429,6 +429,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::{builtin, sampler_param, sampler_state, Plugins, LEMON_SAMPLER};
 
     #[test]
     fn targets_and_names() {
@@ -628,5 +629,157 @@ mod tests {
         fn load_state(&mut self, _: &[u8]) -> bool {
             false
         }
+    }
+
+    /// A sampler channel with settings Lemon Sampler's knobs can show exactly (`sampler_state` sends them all).
+    fn edited_sampler_channel() -> os_model::Channel {
+        use os_model::{Envelope, SampleFx};
+        let mut ch = crate::app::test_project().channels.remove(0);
+        let e = &mut ch.envelopes[Envelope::PITCH];
+        (e.enabled, e.attack, e.decay, e.sustain, e.amount, e.attack_tension, e.release_tension) = (true, 30000, 40000, 100, -64, 32, -96);
+        ch.envelopes[Envelope::VOLUME].enabled = true;
+        ch.envelopes[Envelope::CUTOFF].release = 16384;
+        let s = &mut ch.sound;
+        (s.cutoff, s.resonance, s.filter_type, s.declick, s.sampler_flags) = (128, 64, 5, 3, Some(2));
+        s.fx = SampleFx {
+            flags: SampleFx::REVERSE | SampleFx::CLIP,
+            boost: 64,
+            fade_out: 256,
+            fade_in: 1024,
+            stereo_delay: 3072,
+            pogo: 128,
+            feedback: 64,
+            cutoff: 512,
+            resonance: 320,
+            ring_mix: 200,
+            ring_freq: 64,
+            reverb: 192,
+            reverb_type: 0,
+            ping_pong: true,
+            remove_dc: true,
+            normalize: true,
+            polarity: true,
+            crossfade: 512,
+            trim: 128,
+            start_bits: 0.25f64.to_bits(),
+            length_bits: 0.5f64.to_bits(),
+            loop_follows_reverse: false,
+        };
+        ch
+    }
+
+    /// Every parameter of the instance under `key`, by name with its normalized value.
+    fn sampler_values(pl: &Plugins, key: usize) -> Vec<(String, f64)> {
+        let p = pl.hosted[&key].plugin.lock().unwrap();
+        (0..p.param_count()).filter_map(|i| p.param_info(i)).map(|i| (i.name.clone(), p.param_value(i.id).unwrap())).collect()
+    }
+
+    /// `sampler_param` is the reverse of `sampler_state`: a fresh channel given every parameter of an instance started
+    /// from an edited channel becomes that channel; the edited channel given its own instance's values does not change,
+    /// nor does one whose file values the knobs only approximate (spec: plugins/lemon-sampler.md §6, §7).
+    #[test]
+    fn sampler_edits_reach_the_channel() {
+        let mut pl = Plugins::default();
+        pl.available = builtin();
+        let index = pl.index_of(LEMON_SAMPLER).unwrap();
+        let mut ch = edited_sampler_channel();
+        pl.create_with(0, index, Some(&sampler_state(&ch))).unwrap();
+        let values = sampler_values(&pl, 0);
+        let mut fresh = crate::app::test_project().channels.remove(0);
+        fresh.sound.sampler_flags = Some(10);
+        let changed = values.iter().filter(|(n, v)| sampler_param(n, *v, &mut fresh)).count();
+        assert!(changed > 20, "{changed}");
+        assert_eq!(fresh.envelopes, ch.envelopes);
+        assert_eq!(fresh.sound.fx, ch.sound.fx);
+        let (a, b) = (&fresh.sound, &ch.sound);
+        assert_eq!((a.cutoff, a.resonance, a.filter_type, a.declick, a.stretch), (b.cutoff, b.resonance, b.filter_type, b.declick, b.stretch));
+        assert_eq!(a.sampler_flags, Some(2), "loop points off: value 8 cleared, the other bits kept");
+        assert_eq!(fresh.misc, ch.misc);
+        let before = ch.clone();
+        assert!(!values.iter().any(|(n, v)| sampler_param(n, *v, &mut ch)), "unedited");
+        assert_eq!(ch, before);
+        // Stored values beyond a knob's reach (resonance 1000 plays as 640, trim past 100 %, declick mode 6, an
+        // envelope time under the minimum) stay as the file has them.
+        let mut odd = edited_sampler_channel();
+        (odd.sound.fx.resonance, odd.sound.fx.trim, odd.sound.declick, odd.envelopes[0].attack) = (1000, 300, 6, 0);
+        pl.create_with(1, index, Some(&sampler_state(&odd))).unwrap();
+        let before = odd.clone();
+        assert!(!sampler_values(&pl, 1).iter().any(|(n, v)| sampler_param(n, *v, &mut odd)));
+        assert_eq!(odd, before);
+        // One knob moved: only its field changes.
+        let mut one = before.clone();
+        assert!(sampler_param("Filter resonance", 0.25, &mut one));
+        assert!(sampler_param("Volume attack", 0.5, &mut one));
+        assert!(sampler_param("Root note", 48.0 / 131.0, &mut one));
+        assert_eq!((one.sound.fx.resonance, one.envelopes[os_model::Envelope::VOLUME].attack, one.misc.root), (160, 32768, 48));
+        one.sound.fx.resonance = before.sound.fx.resonance;
+        one.envelopes[os_model::Envelope::VOLUME].attack = before.envelopes[os_model::Envelope::VOLUME].attack;
+        one.misc.root = before.misc.root;
+        assert_eq!(one, before);
+    }
+
+    /// Misc tab and Lemon Sampler edits are saved: edit, save (a new file, then into the opened file), open, and the
+    /// channel reads back the same (spec: flp/engine-events.md "A channel", ui/plugin-window.md "Misc tab").
+    #[test]
+    fn channel_settings_survive_save_and_open() {
+        use crate::misc_page::M;
+        let path = std::env::temp_dir().join(format!("os_channel_settings_{}.flp", std::process::id()));
+        let mut app = App::new(None);
+        let misc = [
+            (M::LevelPan, 0.25),
+            (M::LevelVol, 1.0),
+            (M::LevelModX, 0.75),
+            (M::PolyMax, 3.0),
+            (M::PolySlide, 0.25),
+            (M::Mono, 1.0),
+            (M::Porta, 1.0),
+            (M::TimeSwing, 0.5),
+            (M::Cut, 7.0),
+            (M::CutBy, 9.0),
+            (M::Root, 48.0),
+            (M::Fine, -35.0),
+            (M::MainPitch, 0.0),
+        ];
+        let check = |app: &App, want: &os_model::Channel, row: usize| {
+            let c = &app.state.project.channels[row];
+            assert_eq!(c.misc.levels, want.misc.levels);
+            let field = |c: &os_model::Channel| (c.misc.max_poly, c.misc.slide, c.misc.mono, c.misc.porta, c.misc.swing, c.misc.cut, c.misc.cut_by);
+            assert_eq!(field(c), field(want));
+            assert_eq!((c.misc.root, c.misc.fine, c.misc.main_pitch), (want.misc.root, want.misc.fine, want.misc.main_pitch));
+            assert_eq!(c.envelopes, want.envelopes);
+            assert_eq!(c.sound, want.sound);
+        };
+        // A new project: `create` writes the edited channel.
+        for (m, v) in misc {
+            crate::misc::set(&mut app, 0, m, v);
+        }
+        for (n, v) in [("Pitch envelope", 1.0), ("Pitch attack", 0.5), ("Filter type", 3.0 / 7.0), ("Boost", 0.25), ("Reverse", 1.0)] {
+            assert!(sampler_param(n, v, &mut app.state.project.channels[0]), "{n}");
+        }
+        let want = app.state.project.channels[0].clone();
+        app.save_to(path.clone());
+        assert!(app.state.message.as_deref().is_some_and(|m| m.starts_with("Saved")), "{:?}", app.state.message);
+        app.open(path.clone());
+        check(&app, &want, 0);
+        // Into the opened file: `apply` patches what it holds and adds the rest, on another channel and this one.
+        for (m, v) in misc {
+            crate::misc::set(&mut app, 2, m, v);
+        }
+        crate::misc::set(&mut app, 0, M::Fine, 20.0);
+        for (n, v) in [("Volume decay", 0.25), ("Declicking mode", 0.4), ("Sample start", 0.125), ("Filter frequency (modulation X)", 0.5)] {
+            assert!(sampler_param(n, v, &mut app.state.project.channels[2]), "{n}");
+        }
+        let (want0, want2) = (app.state.project.channels[0].clone(), app.state.project.channels[2].clone());
+        app.save_to(path.clone());
+        assert!(app.state.message.as_deref().is_some_and(|m| m.starts_with("Saved")), "{:?}", app.state.message);
+        let saved = std::fs::read(&path).unwrap();
+        app.open(path.clone());
+        check(&app, &want0, 0);
+        check(&app, &want2, 2);
+        assert_eq!(app.state.project.channels[0].misc.fine, 20);
+        // Saved again unedited: the same bytes.
+        app.save_to(path.clone());
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+        let _ = std::fs::remove_file(&path);
     }
 }
