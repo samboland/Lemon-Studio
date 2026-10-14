@@ -706,6 +706,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
     let scroll = st.scroll.min((total - area.h).max(0.0)).max(0.0);
     ui.c.fill_rect(area, page_color);
     ui.c.push_clip(area);
+    let page_hits = ui.hit_count();
     let mut y = area.y + 15.0 - scroll;
     for gr in page(st.tab, s) {
         let open = group_open(st, &gr);
@@ -715,6 +716,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         }
         y += h + 6.0;
     }
+    ui.clip_hits_since(page_hits, area);
     ui.c.pop_clip();
     if total > area.h {
         let track = Rect::new(area.right() - 10.0, area.y + 4.0, 7.0, area.h - 8.0);

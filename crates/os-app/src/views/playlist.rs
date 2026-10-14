@@ -76,14 +76,17 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         let x0 = r.x + 281.0 + ui.c.text_width(f, "Playlist - ");
         let w = ui.c.text_width(f, &arr);
         let arrow_w = ui.c.text_width(f, "  \u{203a}  ");
-        let hit = Rect::new(x0 - 2.0, r.y, w + arrow_w * 0.7, 22.0);
+        let title_bounds = Rect::new(r.x + 281.0, r.y, (r.w - 349.0).max(0.0), 22.0);
+        let hit = Rect::new(x0 - 2.0, r.y, w + arrow_w * 0.7, 22.0).intersect(&title_bounds);
         if ui.hit(hit, Action::PlArrangement, "Arrangements (switch, add, clone, rename, delete)") {
+            ui.c.push_clip(title_bounds);
             let bg = ui.t.window_title;
             ui.c.fill_rect(Rect::new(x0 - 1.0, r.y + 1.0, w + arrow_w * 0.7, 20.0), bg);
             let hot = ui.t.h(0xf7a94c);
             ui.c.text(f, x0, r.y + 1.0, hot, &arr);
             let ax = x0 + w + arrow_w * 0.35;
             ui.c.fill_polygon(&[(ax - 4.0, r.y + 9.0), (ax + 4.0, r.y + 9.0), (ax, r.y + 14.0)], hot);
+            ui.c.pop_clip();
         }
     }
 

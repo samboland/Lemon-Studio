@@ -603,6 +603,13 @@ impl Ui<'_> {
         self.hits.len()
     }
 
+    /// Keep page controls inside the same bounds as their painting.
+    pub fn clip_hits_since(&mut self, start: usize, bounds: Rect) {
+        for hit in &mut self.hits[start..] {
+            hit.rect = hit.rect.intersect(&bounds);
+        }
+    }
+
     /// Register a hit region; returns whether it is hovered (topmost last frame).
     pub fn hit(&mut self, rect: Rect, action: Action, hint: impl Into<Cow<'static, str>>) -> bool {
         let hovered = self.hover.as_ref() == Some(&action) && rect.contains(self.mouse.0, self.mouse.1);
@@ -6900,6 +6907,31 @@ mod tests {
         assert!(!app.state.settings.open);
         app.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::F10), false, false);
         assert!(app.state.settings.open && app.state.settings.tab == MIDI);
+    }
+
+    #[test]
+    fn settings_controls_stay_inside_visible_window() {
+        for (width, height) in [(1280, 800), (640, 480)] {
+            let mut c = Canvas::new(width, height, 1.0).unwrap();
+            let mut app = App::new(None);
+            app.state.screen = (width as f32, height as f32);
+            app.state.settings.open = true;
+            for tab in 0..views::settings::TABS.len() {
+                app.state.settings.tab = tab;
+                for scroll in [0.0, 10000.0] {
+                    app.state.settings.scroll = scroll;
+                    frame(&mut app, &mut c, None);
+                    let bounds = views::settings::rect(&app.state);
+                    for hit in app.hits.iter().filter(|h| h.win == Some(Win::Settings) && !h.rect.is_empty()) {
+                        assert_eq!(hit.rect, hit.rect.intersect(&bounds), "tab {tab}: {:?}", hit.action);
+                    }
+                    if tab == views::settings::PLUGINS && scroll == 0.0 && width == 1280 {
+                        let below = app.top_hit(bounds.cx(), bounds.bottom() + 3.0);
+                        assert!(below.is_none_or(|h| h.win != Some(Win::Settings)));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

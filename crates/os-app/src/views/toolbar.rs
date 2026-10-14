@@ -20,14 +20,14 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     // Bands.
     if lemon {
         // Lemon (spec: ui/lemon-design.md §4): flat bands, short rounded separators.
-        ui.c.fill_rect(Rect::new(0.0, 0.0, width, 81.0), t.toolbar);
+        ui.c.fill_rect(Rect::new(0.0, 0.0, width, 82.0), t.toolbar);
         ui.c.fill_rect(Rect::new(0.0, 41.0, width, 1.0), t.toolbar_line);
-        ui.c.fill_rect(Rect::new(0.0, 81.0, width, 2.0), t.toolbar_line);
+        ui.c.fill_rect(Rect::new(0.0, 82.0, width, 1.0), t.toolbar_line);
     } else {
         ui.c.fill_rect_gradient(Rect::new(0.0, 0.0, width, 41.0), t.toolbar.shade(0.025), t.toolbar.shade(-0.015), 0.0);
         ui.c.fill_rect(Rect::new(0.0, 41.0, width, 1.0), t.toolbar_line);
-        ui.c.fill_rect_gradient(Rect::new(0.0, 42.0, width, 39.0), t.toolbar.shade(0.02), t.toolbar.shade(-0.02), 0.0);
-        ui.c.fill_rect(Rect::new(0.0, 81.0, width, 2.0), t.toolbar_line);
+        ui.c.fill_rect_gradient(Rect::new(0.0, 42.0, width, 40.0), t.toolbar.shade(0.02), t.toolbar.shade(-0.02), 0.0);
+        ui.c.fill_rect(Rect::new(0.0, 82.0, width, 1.0), t.toolbar_line);
     }
     // Empty toolbar areas drag the window (registered first, so controls win).
     ui.hit(Rect::new(0.0, 0.0, width, 81.0), Action::DragWindow, "");

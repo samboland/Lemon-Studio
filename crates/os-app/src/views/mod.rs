@@ -214,7 +214,8 @@ pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32
         ui.c.fill_rect_gradient(bar, t.window_title.shade(0.04), t.window_title.shade(-0.03), 0.0);
         ui.c.fill_rect(Rect::new(r.x, r.y + 22.0, r.w, 1.0), t.splitter_dark);
     }
-    ui.c.text(os_ui::Font::new(17), r.x + title_x, r.y + 1.0, t.text, title);
+    let title_right = r.right() - if buttons { 68.0 } else { 4.0 };
+    ui.c.text_clip(os_ui::Font::new(17), r.x + title_x, r.y + 1.0, (title_right - r.x - title_x).max(0.0), t.text, title);
     ui.hit(bar, Action::WinDrag(win), "Drag to move");
     // Minimize / maximize / close glyphs at the right (1862, 1881, 1901 at full width).
     if buttons {

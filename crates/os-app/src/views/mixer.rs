@@ -583,10 +583,13 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
             let face = if hov { ui.t.s(0x2f3335) } else { ui.t.s(0x2a2d2f) };
             lk::outlined(ui.c, Rect::new(row.x + 2.0, row.y, row.w - 4.0, row.h), lk::r_btn(t).min(row.h / 2.0), ui.t.s(0x1f2224), face);
         } else {
-            ui.c.fill_rect(row, ui.t.s(0x1f2224));
-            ui.c.fill_rect(row.inset(1.0), if hov { ui.t.s(0x2f3335) } else { ui.t.s(0x2a2d2f) });
+            let cell = Rect::new(row.x, row.y, row.w, 33.0 * kp);
+            ui.c.fill_rect(cell, if hov { ui.t.s(0x2f3335) } else { ui.t.s(0x2a2d2f) });
+            ui.c.fill_rect(Rect::new(cell.x, cell.bottom() - 1.0, cell.w, 1.0), ui.t.s(0x1f2224));
         }
-        chevron(ui, row.x + 10.0, row.cy(), true, if ha { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
+        let ax = row.x + 10.0;
+        let ay = row.cy();
+        ui.c.fill_polygon(&[(ax - 4.0, ay - 2.0), (ax + 4.0, ay - 2.0), (ax, ay + 3.0)], if ha { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
         match &plugin {
             Some(p) => ui.c.text_clip(Font::new(fs), row.x + 19.0, row.y + 4.0 * kp, 140.0, ui.t.tx(0xc9d0d4), p),
             None => ui.c.text_clip(Font::new(fs).italic(), row.x + 19.0, row.y + 4.0 * kp, 140.0, ui.t.s(0x50575b), &format!("Slot {}", i + 1)),
