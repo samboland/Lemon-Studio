@@ -9,6 +9,8 @@
 //! - A new main-menu entry registers in its area module's `menu_handles` / `menu_run` (`menu_registry.rs` lists the
 //!   areas; `views::menus::works` follows it): `menu_item` below stays as it is.
 //! - A new shortcut goes in its area's `key` (`menu_registry::KEYS`), not in `App::key`'s table.
+//! - A new setting lives in its tab's file under `views/settings/` (its rows, its `LIVE` labels and its `SAct`
+//!   handling).
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -2809,21 +2811,6 @@ impl App {
         self.invalidate();
     }
 
-    /// The Theme preset tile shown as chosen (spec: ui/lemon-design.md §1): (Default) for Lemon, Classic for the plain
-    /// Classic look, else the theme file picked from the tiles (none when the theme came from elsewhere).
-    fn sync_preset(&mut self) {
-        let st = &mut self.state.settings;
-        st.preset = if self.theme.colors.style.lemon() {
-            0
-        } else if self.theme.colors == os_theme::Palette::default() {
-            1
-        } else if st.preset >= 2 {
-            st.preset
-        } else {
-            usize::MAX
-        };
-    }
-
     /// Open the settings window on `tab` (spec: ui/settings.md §1); reads the output devices and theme files.
     pub fn open_settings(&mut self, tab: usize) {
         let st = &mut self.state.settings;
@@ -2852,183 +2839,27 @@ impl App {
         self.invalidate();
     }
 
-    /// Fills the Audio page: the output devices, the audio settings and the status (spec: ui/settings.md "Audio").
-    fn audio_page(&mut self) {
-        let (devices, default) = crate::audio_cfg::devices();
-        let cfg = crate::audio_cfg::AudioCfg::current();
-        let st = &mut self.state.settings;
-        st.device = match &cfg.device {
-            Some(d) if devices.contains(d) => d.clone(),
-            Some(d) => format!("{d} (not found: default device)"),
-            None => format!("Default ({})", default.as_deref().unwrap_or("no output device")),
-        };
-        st.devices = devices;
-        st.audio = cfg;
-        st.rate = crate::audio_cfg::rate();
-        self.audio_status();
-    }
-
-    /// The Audio page's status lines from the stream that is open; returns whether they changed.
-    fn audio_status(&mut self) -> bool {
-        let tp = &self.transport;
-        let host = cpal::default_host().id().name();
-        let first = match tp.opened() {
-            Some((name, rate, buffer)) => {
-                let block = match tp.block() {
-                    0 => String::new(),
-                    b => format!(", blocks of {}", views::settings::buffer_text(b, rate)),
-                };
-                let buffer = buffer.map_or(String::new(), |b| format!(", buffer {}", views::settings::buffer_text(b, rate)));
-                format!("Status: {name} open at {rate} Hz{block}{buffer} ({host})")
-            }
-            None => format!("Status: opens with the first note or Play ({host})"),
-        };
-        let second = match tp.underruns() {
-            0 => "No dropouts so far.".to_string(),
-            n => format!("Dropouts so far: {n} (device blocks the engine could not fill in time; a longer buffer helps)"),
-        };
-        let st = &mut self.state.settings;
-        let changed = st.status[0] != first || st.status[1] != second;
-        st.status = [first, second];
-        changed
-    }
-
-    /// The menu of an Audio page combo, under its box (`x`, `y`).
-    fn audio_menu(&mut self, label: &str, x: f32, y: f32) {
-        use crate::audio_cfg::{Set, BUFFERS, RATES};
-        use crate::playlist::{Cmd, Mark, PItem, Popup};
-        use views::settings::{BUFFER_LENGTH, OUTPUT_DEVICE, SAMPLE_RATE};
-        let st = &self.state.settings;
-        let cfg = &st.audio;
-        let rate = st.rate.unwrap_or(44100);
-        let items: Vec<PItem> = match label {
-            OUTPUT_DEVICE => std::iter::once(PItem::new("Default device", Cmd::Audio(Set::Device(None))).mark(Mark::Radio(cfg.device.is_none())))
-                .chain(st.devices.iter().map(|d| PItem::new(d.clone(), Cmd::Audio(Set::Device(Some(d.clone())))).mark(Mark::Radio(cfg.device.as_ref() == Some(d)))))
-                .collect(),
-            SAMPLE_RATE => std::iter::once(PItem::new("Device rate", Cmd::Audio(Set::Rate(None))).mark(Mark::Radio(cfg.rate.is_none())))
-                .chain(RATES.iter().map(|&r| PItem::new(format!("{r} Hz"), Cmd::Audio(Set::Rate(Some(r)))).mark(Mark::Radio(cfg.rate == Some(r)))))
-                .collect(),
-            BUFFER_LENGTH => std::iter::once(PItem::new("Device default", Cmd::Audio(Set::Buffer(None))).mark(Mark::Radio(cfg.buffer.is_none())))
-                .chain(BUFFERS.iter().map(|&b| {
-                    PItem::new(views::settings::buffer_text(b, rate), Cmd::Audio(Set::Buffer(Some(b)))).mark(Mark::Radio(cfg.buffer == Some(b)))
-                }))
-                .collect(),
-            _ => return,
-        };
-        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None });
-        self.invalidate();
-    }
-
-    /// Changes one audio setting: kept for the next start, hosted plugins move to the new rate, and the open streams
-    /// move to the new output (spec: ui/settings.md "Audio").
-    pub fn set_audio(&mut self, s: crate::audio_cfg::Set) {
-        let cfg = crate::audio_cfg::AudioCfg::current().with(s);
-        cfg.apply();
-        if let Some(rate) = crate::audio_cfg::rate() {
-            self.plugins.set_rate(rate);
-        }
-        self.transport.reopen();
-        self.audio_page();
-        let st = &self.state.settings;
-        self.state.message = Some(format!("Audio: {}, {} Hz", st.device, st.rate.unwrap_or(0)));
-        self.invalidate();
-    }
-
-    /// Theme import (spec: ui/flstheme.md): pick a .flstheme, starting in FL's theme folder when installed.
-    fn theme_dialog(&mut self) {
-        let mut dlg = rfd::FileDialog::new().add_filter("Theme", &["flstheme", "txt"]).set_title("Load theme");
-        let fl = std::path::Path::new(r"C:\Program Files\Image-Line\FL Studio 2026\Artwork\Themes");
-        if fl.is_dir() {
-            dlg = dlg.set_directory(fl);
-        }
-        if let Some(p) = crate::dialog::modal(|| dlg.pick_file()) {
-            self.load_theme_file(&p);
-        }
-    }
-
+    /// A click in the settings window: the window's own controls here, a page's controls in its tab's file
+    /// (`views::settings::act`).
     fn settings_act(&mut self, a: views::settings::SAct) {
         use views::settings::SAct;
         let st = &mut self.state.settings;
         match a {
             SAct::Body => {}
             SAct::Close => st.open = false,
-            SAct::Combo(label, x, y) => return self.audio_menu(label, x, y),
             SAct::Tab(i) => {
                 st.tab = i;
                 st.scroll = 0.0;
             }
-            // Opt in / out of the experimental native host and scan again so the effect lists follow (spec
-            // plugins/fruity-abi.md). Its displayed state comes straight from `os_native::enabled()`.
-            SAct::Check(k) if k == views::settings::NATIVE_HOST_CHECK => {
-                let on = !os_native::enabled();
-                os_native::set_enabled(on);
-                self.start_scan(crate::plugin_db::Mode::Changed);
-                self.state.message = Some(if on { "Experimental native plugin host on: looking for native plugins".into() } else { "Experimental native plugin host off".into() });
-                // The hidden preference applies again (or stops applying) with the host.
-                if os_native::prefer_native_set() {
-                    self.swap_builtin_overrides();
-                }
-            }
-            // Real native plugins in place of the Lemon recreations (spec plugins/fruity-abi.md "Opened projects").
-            SAct::Check(k) if k == views::settings::NATIVE_FIRST_CHECK => {
-                let on = !os_native::prefer_native();
-                os_native::set_prefer_native(on);
-                let n = self.swap_builtin_overrides();
-                self.state.message = Some(match (on, n) {
-                    (true, 0) => "Opened projects play their own native plugins, not the Lemon recreations".into(),
-                    (true, n) => format!("Opened projects play their own native plugins: {n} channels / slots switched from the Lemon recreations"),
-                    (false, 0) => "Lemon recreations play their projects' plugins again".into(),
-                    (false, n) => format!("Lemon recreations play their projects' plugins again: {n} channels / slots switched back"),
-                });
-            }
-            // The plugin manager (spec: ui/plugin-manager.md §2).
-            SAct::Check(k) if views::settings::plugin_check(k) => self.plugin_check(k),
-            SAct::Plug(p) => self.plugin_act(p),
-            // Checks and buttons outside `settings::LIVE` are drawn greyed out with an `Action::Placeholder` hit instead.
-            SAct::Check(k) => self.state.message = Some(off_text(k)),
             SAct::Group(k) => {
                 if !st.folded.remove(k) {
                     st.folded.insert(k);
                 }
             }
-            // Tiles (spec: ui/lemon-design.md §1): 0 = (Default) = the Lemon design, 1 = the Classic look without a
-            // theme file, then the theme files (they colour the Classic design).
-            SAct::Preset(0) => {
-                self.set_design(Design::Lemon, true);
-                self.state.message = Some("Theme: default (Lemon)".into());
-            }
-            SAct::Preset(1) => {
-                self.theme = os_theme::Theme::default();
-                os_theme::set_current(&self.theme.colors);
-                save_design(Design::Classic);
-                if let Some(f) = os_paths::user_file("current.flstheme") {
-                    let _ = std::fs::remove_file(f);
-                }
-                self.sync_preset();
-                self.state.message = Some("Theme: Classic".into());
-            }
-            SAct::Preset(i) => {
-                if let Some((name, text)) = st.themes.get(i - 2).cloned() {
-                    st.preset = i;
-                    let fl = os_theme::FlTheme::parse(&text);
-                    self.theme = os_theme::Theme::new(&name, os_theme::fl::palette(&fl), os_theme::Adjust::default());
-                    os_theme::set_current(&self.theme.colors);
-                    save_design(Design::Classic);
-                    // Remembered like an imported theme (loaded at the next start).
-                    if let Some(d) = os_paths::user_dir() {
-                        let _ = std::fs::create_dir_all(&d);
-                        let _ = std::fs::write(d.join("current.flstheme"), &text);
-                    }
-                    self.state.message = Some(format!("Theme: {name}"));
-                }
-            }
-            SAct::Button("Reset") => self.settings_act(SAct::Preset(0)),
-            SAct::Button("Load theme...") => self.theme_dialog(),
-            SAct::Button("Manage plugins") => self.open_settings(views::settings::PLUGINS),
-            SAct::Button("Find new plugins") => self.start_scan(crate::plugin_db::Mode::Changed),
-            SAct::Button("Rescan all") => self.start_scan(crate::plugin_db::Mode::All),
-            SAct::Button("Add folder...") => self.add_plugin_folder(),
-            SAct::Button(b) => self.state.message = Some(off_text(b)),
+            a if views::settings::act(self, &a) => {}
+            // Checks and buttons outside the pages' `LIVE` are drawn greyed out with an `Action::Placeholder` hit instead.
+            SAct::Check(k) | SAct::Button(k) => self.state.message = Some(off_text(k)),
+            _ => {}
         }
         self.invalidate();
     }
@@ -5695,7 +5526,7 @@ pub fn saved_design() -> Design {
         .unwrap_or(Design::Lemon)
 }
 
-fn save_design(d: Design) {
+pub(crate) fn save_design(d: Design) {
     if cfg!(test) {
         return;
     }
