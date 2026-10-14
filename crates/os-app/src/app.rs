@@ -2437,6 +2437,7 @@ impl App {
             self.state.message = Some(format!("Audio: {e}"));
             self.invalidate();
         }
+        crate::log::watch(self);
         // CPU panel (spec: ui/main-window.md §13) and the Plugin performance monitor: a reading at the panel's refresh
         // rate.
         let now = std::time::Instant::now();

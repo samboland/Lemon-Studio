@@ -18,6 +18,7 @@ mod enable_groups;
 mod icons;
 mod knobs;
 mod loading;
+mod log;
 mod logo;
 #[cfg(target_os = "macos")]
 mod macos;

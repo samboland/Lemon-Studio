@@ -157,9 +157,9 @@ mod tests {
     #[test]
     fn unhandled_entries_are_not_available() {
         let mut app = App::new(None);
-        let i = (0..200).find(|&i| item_at(crate::views::menus::HELP_MENU, i).is_some_and(|it| it.label == "Help index")).expect("Help index");
-        assert!(!handles(crate::views::menus::HELP_MENU, "Help index"));
+        let i = (0..200).find(|&i| item_at(crate::views::menus::HELP_MENU, i).is_some_and(|it| it.label == "Tutorials")).expect("Tutorials");
+        assert!(!handles(crate::views::menus::HELP_MENU, "Tutorials"));
         app.menu_item(crate::views::menus::HELP_MENU, i);
-        assert_eq!(app.state.message.as_deref(), Some("Help index: not available yet"));
+        assert_eq!(app.state.message.as_deref(), Some("Tutorials: not available yet"));
     }
 }

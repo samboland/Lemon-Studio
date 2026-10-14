@@ -10,6 +10,11 @@ use crate::icons::{self, Icon};
 /// Leftmost logo centre: just right of the last toolbar control (the news panel / downloads, x 1473).
 const LOGO_MIN_X: f32 = 1520.0;
 
+/// The flat index of entry `label` of menu `menu` (what `Action::MenuItem` takes).
+fn menu_index(menu: usize, label: &str) -> usize {
+    (0..200).find(|&i| menus::item_at(menu, i).is_some_and(|it| it.label == label)).unwrap_or(0)
+}
+
 fn btn(x: f32, y: f32) -> Rect {
     Rect::new(x, y, 30.0, 33.0)
 }
@@ -280,7 +285,7 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
         (Icon::Undo, "Undo history"),
         (Icon::Cut, "Edit tools"),
         (Icon::Mic, "Audio input / recording"),
-        (Icon::Help, "Help"),
+        (Icon::Help, "Help index"),
         (Icon::Save, "Save project (Ctrl+S)"),
         (Icon::SaveRender, "Export the song as a WAV file (Ctrl+R)"),
         (Icon::Info, "Project info"),
@@ -292,6 +297,7 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
             Icon::Save => Action::MenuItem(0, menus::FILE_SAVE),
             Icon::SaveRender => Action::MenuItem(0, menus::FILE_EXPORT),
             Icon::Info => Action::MenuItem(menus::OPTIONS_MENU, menus::OPT_INFO),
+            Icon::Help => Action::MenuItem(menus::HELP_MENU, menu_index(menus::HELP_MENU, "Help index")),
             _ => Action::Placeholder(hint),
         };
         tool_button(ui, r, icon, false, action, hint);
