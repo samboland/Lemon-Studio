@@ -15,6 +15,7 @@ pub mod eq;
 pub mod inst;
 pub mod lemon;
 pub mod menu;
+pub mod text_field;
 
 /// Interaction state of a control. `on` (latched / active) is separate from the pointer state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
