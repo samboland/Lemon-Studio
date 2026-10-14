@@ -10,7 +10,7 @@ use os_ui::kit::lemon as lk;
 use os_ui::kit::{self, Dir};
 use os_ui::{Color, Font, Rect};
 
-use crate::app::{Action, State, Ui};
+use crate::app::{Action, State, Ui, Win};
 use crate::plugin_db::{self as db, Col, Prefer};
 
 /// What a click in the settings window does (`Action::Settings`).
@@ -58,6 +58,7 @@ pub enum Plug {
 #[derive(Debug, Default)]
 pub struct SettingsUi {
     pub open: bool,
+    pub pos: Option<(f32, f32)>,
     pub tab: usize,
     /// Page scroll in pixels.
     pub scroll: f32,
@@ -173,17 +174,19 @@ pub fn tab_for_menu(label: &str) -> Option<usize> {
 }
 
 pub const W: f32 = 668.0;
-const LABEL: Font = Font::new(13);
+const LABEL: Font = Font::system(11);
 const TABS_B: f32 = 64.0;
-const GX: f32 = 30.0;
+const GX: f32 = 22.0;
 const GW: f32 = 608.0;
 
-/// The window rect: 668 x 900 at (626, 70) on a 1920x1080 screen, centred and shrunk to fit smaller screens.
+/// The window rect: centred initially, movable, and kept inside the workspace height.
 pub fn rect(s: &State) -> Rect {
     let (sw, sh) = s.screen;
-    let h = 900.0_f32.min(sh - 20.0).max(200.0);
-    let y = 70.0_f32.min(sh - h - 10.0).max(0.0);
-    Rect::new(((sw - W) / 2.0).max(0.0).round(), y, W, h)
+    let w = W.min((sw - 16.0).max(240.0));
+    let h = 900.0_f32.min((sh - super::WORK_Y - 12.0).max(160.0));
+    let initial = (((sw - w) / 2.0).max(0.0).round(), super::WORK_Y + 6.0);
+    let (x, y) = s.settings.pos.unwrap_or(initial);
+    Rect::new(x.clamp(0.0, (sw - w).max(0.0)), y.clamp(super::WORK_Y, (sh - h).max(super::WORK_Y)), w, h)
 }
 
 /// One control row. Labels double as keys (unique per page).
@@ -333,11 +336,9 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 combo("Off", 64.0, "Transparent windows"),
                 combo("Entertain me", 126.0, "Animations"),
                 Slider("Smoothing", 0.2),
-                combo("Ultrasmooth", 126.0, "Animation refresh rate"),
-                Check2("Force refreshes", true, "Transparent menus", true),
-                Off("Thick lines", true),
-                Check("High visibility", false),
-                combo("Off", 146.0, "Colorful waveforms"),
+                pair(combo("Ultrasmooth", 126.0, "Animation refresh rate"), Check("Force refreshes", true)),
+                pair(Off("Thick lines", true), Check("Transparent menus", true)),
+                pair(Check("High visibility", false), combo("Off", 146.0, "Colorful waveforms")),
             ]) },
             Group { note: " (requires a restart to take effect)", ..gf("Language", false, vec![
                 combo("English (US) (en)", 176.0, "Language"),
@@ -346,8 +347,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 Buttons(vec![("Update languages", 138.0)]),
             ]) },
             gf("Input", false, vec![
-                combo("Multi-button mouse", 136.0, "Optimize for"),
-                Buttons(vec![("Manage shortcuts", 212.0)]),
+                pair(combo("Multi-button mouse", 136.0, "Optimize for"), Buttons(vec![("Manage shortcuts", 212.0)])),
                 Check("Click-and-hold & special gesture functions", false),
                 Check("Use both mouse buttons in step sequencer", false),
                 Slider("Vertical scrolling speed", 0.5),
@@ -553,7 +553,7 @@ fn swatch(p: &os_theme::Palette) -> [Color; 3] {
 
 fn row_h(r: &Row) -> f32 {
     match r {
-        Row::Check(..) | Row::Check2(..) | Row::Off(..) => 21.0,
+        Row::Check(..) | Row::Check2(..) | Row::Off(..) => 22.0,
         Row::Combo(..) | Row::Value(..) | Row::ValueR(..) => 27.0,
         Row::Buttons(..) => 36.0,
         Row::Slider(..) => 28.0,
@@ -572,7 +572,7 @@ fn row_h(r: &Row) -> f32 {
 }
 
 fn group_h(gr: &Group, open: bool) -> f32 {
-    let head = if gr.title.is_empty() { 8.0 } else { 30.0 };
+    let head = if gr.title.is_empty() { 8.0 } else { 26.0 };
     if !open {
         return head;
     }
@@ -590,38 +590,28 @@ pub fn content_h(s: &State) -> f32 {
 
 /// Visible page height.
 pub fn page_h(s: &State) -> f32 {
-    rect(s).h - TABS_B - 4.0
+    rect(s).h - TABS_B - 15.0
 }
 
 pub fn paint(ui: &mut Ui, s: &State) {
     let st = &s.settings;
-    let r = rect(s);
+    let outer = rect(s);
     let t = ui.t;
-    ui.hit(r, Action::Settings(SAct::Body), "");
-    // Shadow, frame, title bar.
+    ui.hit(outer, Action::Settings(SAct::Body), "");
+    ui.c.fill_rrect(outer.outset(4.0), 6.0, Color::rgb(0).with_alpha(50));
+    let r = kit::float_frame(ui.c, t, outer);
     let lemon = super::lemon(ui);
-    if lemon {
-        // Lemon (spec: ui/lemon-design.md §10): rounded window, pill tabs, rounded groups and square checks.
-        ui.c.fill_rrect(r.outset(4.0), lk::r_panel(t) + 4.0, Color::rgb(0).with_alpha(50));
-        lk::outlined(ui.c, r, lk::r_panel(t), t.s(0x1c1e21), t.s(0x2b2d30));
-        ui.c.fill_rrect(Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, TABS_B - 1.0), lk::r_panel(t) - 1.0, t.s(0x25272a));
-        ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + TABS_B - lk::r_panel(t), r.w - 2.0, lk::r_panel(t)), t.s(0x25272a));
-    } else {
-        ui.c.fill_rrect(r.outset(4.0), 6.0, Color::rgb(0).with_alpha(50));
-        ui.c.fill_rect(r, t.s(0x1c1e21));
-        ui.c.fill_rect(r.inset(1.0), t.s(0x2b2d30));
-        ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, TABS_B - 1.0), t.s(0x25272a));
-    }
-    ui.c.icon(&os_ui::tabler::SETTINGS, Rect::new(r.x + 7.0, r.y + 7.0, 16.0, 16.0), t.text_dim);
     let (_, title, _) = TABS[st.tab.min(TABS.len() - 1)];
-    ui.c.text(Font::new(13), r.x + 28.0, r.y + 7.0, t.text, &format!("Settings - {title}"));
-    let x = Rect::new(r.right() - 26.0, r.y + 5.0, 20.0, 20.0);
+    super::window_frame(ui, Win::Settings, r, "", 28.0, false);
+    ui.c.text(Font::system(13), r.x + 20.0, r.y + 4.0, t.text_dim, &format!("Settings - {title}"));
+    ui.c.icon(&os_ui::tabler::SETTINGS, Rect::new(r.x + 2.0, r.y + 5.0, 14.0, 14.0), t.text_dim);
+    let x = Rect::new(r.right() - 23.0, r.y + 3.0, 17.0, 17.0);
     let hov = ui.hit(x, Action::Settings(SAct::Close), "Close");
     ui.c.icon(&os_ui::tabler::X, x.inset(3.0), if hov { t.glyph } else { t.text });
-    // Tabs (spec §2): active text coloured by group.
-    let font = Font::new(13);
+    // Tabs use the same selected button style as other windows.
+    let font = Font::system(13);
     let rects = tab_rects(ui, r);
-    for (i, &(label, _, grp)) in TABS.iter().enumerate() {
+    for (i, &(label, _, _)) in TABS.iter().enumerate() {
         let tr = rects[i];
         let hov = ui.hit(tr, Action::Settings(SAct::Tab(i)), TABS[i].1);
         let on = i == st.tab;
@@ -634,21 +624,15 @@ pub fn paint(ui: &mut Ui, s: &State) {
                 ui.c.fill_rrect(pill, lk::r_btn(t), if hov { t.button_hi } else { body });
             }
         } else {
-            ui.c.fill_rect(tr, body);
-            for k in 0..7 {
-                // slanted right edge
-                let k = k as f32;
-                ui.c.fill_rect(Rect::new(tr.right() + k, tr.y + 2.0 + k * 4.0, 1.0, tr.h - 2.0 - k * 4.0), body);
-            }
+            let body = if on { t.s(0x101112) } else if hov { t.button_hi } else { t.s(0x1a1b1c) };
+            ui.c.fill_rrect(tr, 5.0, body);
+            ui.c.fill_polygon(&[(tr.x, tr.bottom() - 5.0), (tr.x, tr.bottom()), (tr.right() + 14.0, tr.bottom()),
+                (tr.right(), tr.y + 5.0), (tr.right() - 5.0, tr.y + 5.0), (tr.right() - 5.0, tr.bottom() - 5.0)], body);
         }
         let col = if on && lemon {
             lk::ink_on_lemon()
         } else if on {
-            match grp {
-                0 => t.a(0x2da2ff),
-                1 => t.h(0xfdc13d),
-                _ => t.a(0xbeff3c),
-            }
+            t.accent
         } else if hov {
             t.glyph
         } else {
@@ -656,7 +640,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         };
         let lh = ui.c.line_height(font);
         let ty = if lemon { tr.cy() - 2.0 } else { tr.cy() };
-        ui.c.text(font, tr.x + 10.0, (ty - lh / 2.0).round(), col, label);
+        ui.c.text_center(font, Rect::new(tr.x, (ty - lh / 2.0).round(), tr.w, lh), col, label);
     }
     ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + TABS_B, r.w - 2.0, 1.0), t.s(0x1c1e21));
     // Page.
@@ -664,12 +648,12 @@ pub fn paint(ui: &mut Ui, s: &State) {
     let total = content_h(s);
     let scroll = st.scroll.min((total - area.h).max(0.0)).max(0.0);
     ui.c.push_clip(area);
-    let mut y = area.y + 7.0 - scroll;
+    let mut y = area.y + 11.0 - scroll;
     for gr in page(st.tab, s) {
         let open = group_open(st, &gr);
         let h = group_h(&gr, open);
         if y + h > area.y && y < area.bottom() {
-            paint_group(ui, s, &gr, Rect::new(r.x + GX, y, GW, h), open, area);
+            paint_group(ui, s, &gr, Rect::new(r.x + GX, y, (r.w - 2.0 * GX).min(GW), h), open, area);
         }
         y += h + 6.0;
     }
@@ -680,18 +664,21 @@ pub fn paint(ui: &mut Ui, s: &State) {
     }
 }
 
-/// Tab rects in window `r`: text width + 10 px each side, 4 px apart, 15 px more between groups.
+/// Tab rects in window `r`: adaptive padding and space for slanted edges.
 fn tab_rects(ui: &mut Ui, r: Rect) -> Vec<Rect> {
-    let font = Font::new(13);
-    let mut x = r.x + 3.0;
+    let font = Font::system(13);
+    let text: Vec<f32> = TABS.iter().map(|(label, _, _)| ui.c.text_width(font, label)).collect();
+    let groups = TABS.windows(2).filter(|tabs| tabs[0].2 != tabs[1].2).count() as f32;
+    let padding = ((r.w - 12.0 - text.iter().sum::<f32>() - 14.0 * (TABS.len() - 1) as f32 - 8.0 * groups) / TABS.len() as f32).clamp(4.0, 16.0);
+    let mut x = r.x + 6.0;
     let mut v = Vec::new();
-    for (i, &(label, _, grp)) in TABS.iter().enumerate() {
+    for (i, &(_, _, grp)) in TABS.iter().enumerate() {
         if i > 0 && TABS[i - 1].2 != grp {
-            x += 15.0;
+            x += 8.0;
         }
-        let w = ui.c.text_width(font, label) + 20.0;
-        v.push(Rect::new(x.round(), r.y + 34.0, w.round(), TABS_B - 34.0));
-        x += w + 11.0;
+        let w = text[i] + padding;
+        v.push(Rect::new(x.round(), r.y + 30.0, w.round(), TABS_B - 34.0));
+        x += w + 14.0;
     }
     v
 }
@@ -702,24 +689,21 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
     if lemon {
         lk::outlined(ui.c, r, lk::r_panel(t) - 2.0, t.s(0x1c1e21), t.s(0x25272a));
     } else {
-        ui.c.fill_rect(r, t.s(0x1c1e21));
+        ui.c.fill_rect(r, t.window_border);
         ui.c.fill_rect(r.inset(1.0), t.s(0x25272a));
     }
     let mut y = r.y + 8.0;
     if !gr.title.is_empty() {
-        let f = Font::new(13).bold();
+        let f = Font::system(11).bold();
         let tw = ui.c.text_width(f, gr.title);
-        let hdr = Rect::new(r.x + 1.0, r.y + 1.0, tw + 14.0, 24.0);
+        let hdr = Rect::new(r.x + 1.0, r.y + 1.0, tw + ui.c.text_width(Font::system(11), gr.note) + 8.0, 19.0);
         if !lemon {
-            ui.c.fill_rect(hdr, t.s(0x222427));
-            for k in 0..6 {
-                let k = k as f32;
-                ui.c.fill_rect(Rect::new(hdr.right() + k, hdr.y, 1.0, hdr.h - k * 4.0), t.s(0x222427));
-            }
+            ui.c.fill_rect(hdr, t.window_title);
+            ui.c.fill_polygon(&[(hdr.right(), hdr.y), (hdr.right() + 6.0, hdr.y), (hdr.right(), hdr.bottom())], t.window_title);
         }
-        ui.c.text(f, r.x + if lemon { 8.0 } else { 4.0 }, r.y + 4.0, if lemon { t.accent } else { t.text }, gr.title);
+        ui.c.text(f, r.x + 4.0, r.y + 2.0, if lemon { t.accent } else { t.text }, gr.title);
         if !gr.note.is_empty() {
-            ui.c.text(Font::new(13), r.x + if lemon { 8.0 } else { 4.0 } + tw, r.y + 4.0, t.text_dim, gr.note);
+            ui.c.text_clip(Font::system(11), r.x + 4.0 + tw, r.y + 2.0, (r.w - tw - 38.0).max(0.0), t.text_dim, gr.note);
         }
         if gr.fold {
             let bar = Rect::new(r.x, r.y, r.w, 26.0);
@@ -728,7 +712,7 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
             }
             kit::chevron(ui.c, r.right() - 10.0, r.y + 13.0, 4.0, if open { Dir::Up } else { Dir::Down }, t.text_dim);
         }
-        y = r.y + 30.0;
+        y = r.y + 26.0;
     }
     if !open {
         return;
@@ -745,7 +729,7 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
 /// A check showing `on`; one that is not `enabled` (not in `LIVE`) is greyed out.
 fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: bool) {
     let t = ui.t;
-    let tw = ui.c.text_width(Font::new(13), key);
+    let tw = ui.c.text_width(Font::system(11), key);
     let hr = Rect::new(x - 8.0, cy - 9.0, tw + 26.0, 18.0);
     let hov = enabled && ui.hit(hr, Action::Settings(SAct::Check(key)), "");
     if !enabled {
@@ -753,8 +737,8 @@ fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: boo
     }
     led(ui, x, cy, on, hov);
     let col = if hov { t.glyph } else { t.text };
-    let lh = ui.c.line_height(Font::new(13));
-    ui.c.text(Font::new(13), x + 11.0, (cy - lh / 2.0).round(), col, key);
+    let lh = ui.c.line_height(Font::system(11));
+    ui.c.text(Font::system(11), x + 11.0, (cy - lh / 2.0).round(), col, key);
     if !enabled {
         grey(ui, hr);
     }
@@ -868,7 +852,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                 } else {
                     kit::bordered(ui.c, b, 2.0, t.s(0x161819), kit::face(t.s(0x212425), kit::State::hover(hov)));
                 }
-                ui.c.text_center(Font::new(13), b, if hov { t.glyph } else { t.text }, label);
+                ui.c.text_center(Font::system(11), b, if hov { t.glyph } else { t.text }, label);
                 if !on {
                     grey(ui, b);
                 }
@@ -876,7 +860,8 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
             }
         }
         Row::Slider(label, v) => {
-            let tr = Rect::new(x0, cy - 2.0, 150.0, 4.0);
+            let width = if label.is_empty() { 270.0 } else if *label == "Smoothing" { 60.0 } else { 150.0 };
+            let tr = Rect::new(x0, cy - 2.0, width, 4.0);
             if super::lemon(ui) {
                 ui.c.fill_rrect(tr, 2.0, t.s(0x161819));
                 ui.c.fill_rrect(Rect::new(tr.x, tr.y, tr.w * v, tr.h), 2.0, t.accent);
@@ -884,10 +869,12 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                 ui.c.fill_rect(tr, t.s(0x161819));
                 ui.c.fill_rect(Rect::new(tr.x, tr.y, tr.w * v, tr.h), t.h(0xc8312e));
             }
-            let hx = tr.x + tr.w * v;
-            ui.c.fill_circle(hx, cy, 8.0, t.s(0x111213));
-            ui.c.fill_circle(hx, cy, 7.0, t.s(0x4a4d50));
-            ui.c.fill_rect(Rect::new(hx - 0.5, cy - 6.0, 1.0, 5.0), t.s(0x1a1b1c));
+            if !label.is_empty() {
+                let hx = tr.x + tr.w * v;
+                ui.c.fill_circle(hx, cy, 8.0, t.s(0x111213));
+                ui.c.fill_circle(hx, cy, 7.0, t.s(0x4a4d50));
+                ui.c.fill_rect(Rect::new(hx - 0.5, cy - 6.0, 1.0, 5.0), t.s(0x1a1b1c));
+            }
             let lw = ui.c.text(f, tr.right() + 12.0, ty, t.text, label);
             let r = Rect::span(tr.x - 9.0, tr.right() + 14.0 + lw, cy - 9.0, cy + 9.0);
             ui.off(r, name_of(label, group));
@@ -904,7 +891,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
             let mut ry = b.y + 2.0;
             if cols.iter().any(|c| !c.0.is_empty()) {
                 for (c, cx) in cols {
-                    ui.c.text(Font::new(13), b.x + 6.0 + cx, ry, t.text_dim, c);
+                    ui.c.text(Font::system(11), b.x + 6.0 + cx, ry, t.text_dim, c);
                 }
                 ry += 18.0;
             }
@@ -914,18 +901,18 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                     ui.c.fill_rect(rr, t.s(0x26292b));
                 }
                 for (c, (_, cx)) in cells.iter().zip(cols.iter()) {
-                    ui.c.text_clip(Font::new(13), rr.x + 4.0 + cx, rr.y + 1.0, rr.w - cx - 8.0, t.text, c);
+                    ui.c.text_clip(Font::system(11), rr.x + 4.0 + cx, rr.y + 1.0, rr.w - cx - 8.0, t.text, c);
                 }
             }
         }
         Row::Text(v, dim) => {
-            ui.c.text(if *dim { Font::new(13) } else { f }, x0, ty, if *dim { t.text_dim } else { t.text }, v);
+            ui.c.text(if *dim { Font::system(11) } else { f }, x0, ty, if *dim { t.text_dim } else { t.text }, v);
         }
         Row::Big(v) => {
             let b = Rect::new(x0 - 4.0, y + 2.0, g.w - 16.0, 24.0);
             ui.c.fill_rect(b, t.s(0x1d1f21));
-            let lh = ui.c.line_height(Font::new(14));
-            ui.c.text_clip(Font::new(14), b.x + 6.0, (b.cy() - lh / 2.0).round(), b.w - 12.0, t.text, v);
+            let lh = ui.c.line_height(Font::system(14));
+            ui.c.text_clip(Font::system(14), b.x + 6.0, (b.cy() - lh / 2.0).round(), b.w - 12.0, t.text, v);
         }
         Row::Presets(tiles, sel) => {
             for (i, (name, sw)) in tiles.iter().enumerate() {
@@ -945,7 +932,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                     ui.c.fill_rect(Rect::new(nr.x, nr.y, nr.w, rad), name_bg);
                     ui.c.fill_rrect(Rect::new(inner.x + 8.0, inner.y + 10.0, 40.0, 10.0), 3.0, sw[1]);
                     ui.c.fill_rrect(Rect::new(inner.x + 54.0, inner.y + 10.0, 24.0, 10.0), 3.0, sw[2]);
-                    ui.c.text_center(Font::new(13).bold(), nr, t.text, name);
+                    ui.c.text_center(Font::system(11).bold(), nr, t.text, name);
                     continue;
                 }
                 ui.c.fill_rect(b, if i == *sel { t.a(0x2d7cd0) } else if hov { t.s(0x5a5c5e) } else { t.s(0x161819) });
@@ -955,21 +942,21 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                 ui.c.fill_rect(Rect::new(inner.x + 54.0, inner.y + 10.0, 24.0, 10.0), sw[2]);
                 ui.c.fill_rect(Rect::new(inner.x, inner.y + 30.0, inner.w, inner.h - 30.0), t.s(0x1d1e1f));
                 let nr = Rect::new(inner.x, inner.y + 30.0, inner.w, inner.h - 30.0);
-                ui.c.text_center(Font::new(13).bold(), nr, t.text, name);
+                ui.c.text_center(Font::system(11).bold(), nr, t.text, name);
             }
         }
         Row::ThemeKnobs => {
             for (i, k) in ["Hue", "Saturation", "Brightness", "Contrast", "Text"].iter().enumerate() {
                 let cx = x0 + 28.0 + i as f32 * 61.0;
                 kit::knob(ui.c, t, cx, y + 24.0, 14.0, 0.5, true, kit::KnobLook::Ring, kit::State::NORMAL);
-                ui.c.text_center(Font::new(13), Rect::new(cx - 30.0, y + 42.0, 60.0, 18.0), t.text, k);
+                ui.c.text_center(Font::system(11), Rect::new(cx - 30.0, y + 42.0, 60.0, 18.0), t.text, k);
             }
             let cols = [t.a(0xa6d84a), t.h(0xfb9244), t.led(0x7cd317), t.h(0xe8502a), t.s(0x3a3c3e), t.h(0xf0a040), t.a(0x8fa8c8), t.tx(0xcfd1d2)];
             for (i, k) in ["Selection", "Highlight", "Mute", "Option", "Steps", "Meters", "Waves", "Text"].iter().enumerate() {
                 let cx = x0 + 28.0 + i as f32 * 61.0;
                 ui.c.fill_circle(cx, y + 92.0, 16.0, t.s(0x111213));
                 ui.c.fill_circle(cx, y + 92.0, 14.5, cols[i]);
-                ui.c.text_center(Font::new(13), Rect::new(cx - 30.0, y + 110.0, 60.0, 18.0), t.text, k);
+                ui.c.text_center(Font::system(11), Rect::new(cx - 30.0, y + 110.0, 60.0, 18.0), t.text, k);
             }
             let r = Rect::new(x0, y, g.w - 24.0, 130.0);
             ui.off(r, "Theme adjustments");
@@ -1007,7 +994,7 @@ fn list_frame(ui: &mut Ui, b: Rect) {
 fn folders(ui: &mut Ui, list: &[(String, &'static str, bool, bool)], b: Rect) {
     let t = ui.t;
     list_frame(ui, b);
-    let f = Font::new(13);
+    let f = Font::system(11);
     let lh = ui.c.line_height(f);
     if list.is_empty() {
         ui.c.text(f, b.x + 8.0, (b.y + 2.0 + 10.5 - lh / 2.0).round(), t.text_dim, "(no folders)");
@@ -1064,7 +1051,7 @@ fn prefer(ui: &mut Ui, cur: Prefer, x0: f32, y: f32, ty: f32) {
             kit::bordered(ui.c, b, 2.0, t.s(0x161819), kit::face(t.s(0x212425), kit::State::hover(hov)));
             if hov { t.glyph } else { t.text }
         };
-        ui.c.text_center(Font::new(13), b, ink, p.label());
+        ui.c.text_center(Font::system(11), b, ink, p.label());
         if !enabled {
             grey(ui, b);
         }
@@ -1079,7 +1066,7 @@ const STAR_ON: os_ui::tabler::TablerIcon = os_ui::tabler::TablerIcon { filled: t
 fn table(ui: &mut Ui, s: &State, area: Rect) {
     let t = ui.t;
     let d = &s.plugdb;
-    let f = Font::new(13);
+    let f = Font::system(11);
     let lh = ui.c.line_height(f);
     let b = Rect::new(area.x, area.y, area.w, 4.0 + 18.0 + TABLE_ROW_H * TABLE_ROWS as f32 + 2.0);
     list_frame(ui, b);

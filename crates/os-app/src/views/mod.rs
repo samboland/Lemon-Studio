@@ -66,7 +66,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     ui.c.set_cover(None);
 
     // Workspace (§9): watermark, then docked windows on top.
-    let left = if s.show_browser { BROWSER_W } else { 0.0 };
+    let left = if s.show_browser { s.browser_width() } else { 0.0 };
     let work = Rect::new(left, WORK_Y, w - left, h - WORK_Y);
     let docked = s.docked();
     if docked.is_none() {
@@ -83,7 +83,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     let docked_at = s.z.iter().rposition(|&w| s.is_max(w));
     // Each part is skipped by a repaint that misses it (`Ui::part`).
     if s.show_browser {
-        let r = Rect::new(0.0, WORK_Y, BROWSER_W, h - WORK_Y);
+        let r = Rect::new(0.0, WORK_Y, s.browser_width(), h - WORK_Y);
         ui.part(Seg::Browser, r, |ui| browser::paint(ui, s, r));
     }
     let _ = work;
@@ -121,7 +121,9 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     rack::paint_fill(ui, s);
     patterns::paint(ui, s);
     if s.settings.open {
+        ui.win = Some(Win::Settings);
         settings::paint(ui, s);
+        ui.win = None;
         playlist::paint_overlays(ui, s);
     }
     browser::paint_ghost(ui, s);

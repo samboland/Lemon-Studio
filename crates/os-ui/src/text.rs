@@ -31,6 +31,8 @@ pub enum Face {
     Ui,
     /// The system's light UI face (Segoe UI Light on Windows): the song position display.
     Light,
+    /// Regular system UI face for compact dialogs.
+    System,
 }
 
 impl Face {
@@ -38,7 +40,7 @@ impl Face {
     fn gdi_name(self) -> &'static str {
         match self {
             Face::Ui => "Cuprum",
-            Face::Light => "Segoe UI",
+            Face::Light | Face::System => "Segoe UI",
         }
     }
 }
@@ -61,6 +63,10 @@ impl Font {
     /// Cuprum at `size` px with natural ClearType advances.
     pub const fn new(size: u16) -> Font {
         Font { face: Face::Ui, size, width: 0, bold: false, italic: false, natural: true }
+    }
+    /// Regular system UI text, with natural advances.
+    pub const fn system(size: u16) -> Font {
+        Font { face: Face::System, size, width: 0, bold: false, italic: false, natural: true }
     }
     /// Horizontally condensed: `width` is the average character width in px.
     pub const fn condensed(size: u16, width: u16) -> Font {
@@ -209,7 +215,7 @@ mod gdi {
         bits: *mut u8,
         cap: (i32, i32),
         fonts: HashMap<(Font, u32, bool), HFONT>,
-        names: [Vec<u16>; 2],
+        names: [Vec<u16>; 3],
         metrics: HashMap<(Font, u32), (i32, i32)>,
         /// Text extents by (font, scale, string) hash: views measure the same labels every frame.
         extents: HashMap<u64, (i32, i32), BuildHasherDefault<Id>>,
@@ -239,7 +245,7 @@ mod gdi {
                 bits: std::ptr::null_mut(),
                 cap: (0, 0),
                 fonts: HashMap::new(),
-                names: [Face::Ui, Face::Light].map(|f| f.gdi_name().encode_utf16().chain(Some(0)).collect()),
+                names: [Face::Ui, Face::Light, Face::System].map(|f| f.gdi_name().encode_utf16().chain(Some(0)).collect()),
                 metrics: HashMap::new(),
                 extents: HashMap::default(),
                 drawn: Lru::new(32 << 20),
@@ -304,7 +310,7 @@ mod gdi {
                     match (f.face, f.bold) {
                         (_, true) => 700,
                         (Face::Light, false) => 300,
-                        (Face::Ui, false) => 400,
+                        (Face::Ui | Face::System, false) => 400,
                     },
                     u32::from(f.italic),
                     0,
@@ -567,7 +573,7 @@ mod portable {
         fn vm(&self, f: Font) -> Vm {
             match f.face {
                 Face::Ui => self.ui,
-                Face::Light => SEGOE_UI,
+                Face::Light | Face::System => SEGOE_UI,
             }
         }
 

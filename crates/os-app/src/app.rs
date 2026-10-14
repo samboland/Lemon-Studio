@@ -26,6 +26,7 @@ pub enum Win {
     ChannelRack,
     PianoRoll,
     Browser,
+    Settings,
     Plugin,
     /// The Plugin performance monitor (spec: ui/plugin-performance.md).
     Perf,
@@ -189,6 +190,8 @@ pub enum Action {
     BrowserMenu,
     /// The search field (focus it, §5).
     BrowserSearch,
+    /// The browser's right-hand splitter.
+    BrowserResize,
     PlaylistArea,
     MixerArea,
     RackArea,
@@ -646,6 +649,7 @@ pub enum Drag {
     WinResize { win: Win, edges: u8, m0: (f32, f32), r0: Rect },
     /// Resize the channel rack from its right / bottom edges.
     RackResize { edges: u8, m0: (f32, f32), s0: (f32, f32) },
+    BrowserResize { x0: f32, width: f32 },
     /// Change a channel's mixer track (spec: ui/channel-rack.md §5).
     RackMixer { ch: usize, y0: f32, v0: u16 },
     Fader { track: u16, y0: f32, v0: f64 },
@@ -768,6 +772,9 @@ pub struct State {
     /// Browser (spec: ui/browser.md): active tab, opened node keys, list scroll (px), selected row key,
     /// and the drag label with the mouse position while an item is dragged.
     pub browser_tab: usize,
+    pub browser_width: f32,
+    /// The disk row that opened the context menu, kept independently of row indexes.
+    pub browser_context: Option<views::browser::Row>,
     pub browser_open: std::collections::HashSet<String>,
     /// Folders dropped on the window: All-tab roots (spec: ui/browser.md §6).
     pub browser_folders: Vec<PathBuf>,
@@ -803,6 +810,7 @@ pub struct State {
 
 impl State {
     pub fn shown(&self, w: Win) -> bool {
+        if w == Win::Settings { return self.settings.open; }
         self.z.contains(&w)
     }
 
@@ -818,7 +826,7 @@ impl State {
 
     /// The workspace: right of the browser, below the toolbar.
     pub fn work_rect(&self) -> Rect {
-        let left = if self.show_browser { views::BROWSER_W } else { 0.0 };
+        let left = if self.show_browser { self.browser_width() } else { 0.0 };
         Rect::new(left, views::WORK_Y, (self.screen.0 - left).max(0.0), (self.screen.1 - views::WORK_Y).max(0.0))
     }
 
@@ -846,6 +854,7 @@ impl State {
 
     /// Where the window is painted: the workspace when maximized, a title bar when minimized.
     pub fn win_rect(&self, w: Win) -> Rect {
+        if w == Win::Settings { return views::settings::rect(self); }
         let Some(i) = w.slot() else { return Rect::new(0.0, 0.0, 0.0, 0.0) };
         let f = self.float_rect(w);
         let ws = self.wins[i];
@@ -860,18 +869,25 @@ impl State {
 
     /// Show `w` and bring it to the front.
     pub fn raise(&mut self, w: Win) {
+        if w == Win::Settings {
+            self.settings.open = true;
+            self.no_focus = false;
+            return;
+        }
         self.z.retain(|&o| o != w);
         self.z.push(w);
         self.no_focus = false;
     }
 
     pub fn hide(&mut self, w: Win) {
+        if w == Win::Settings { self.settings.open = false; }
         self.z.retain(|&o| o != w);
     }
 
     /// Whether `w` is in front of everything that could cover it: the top window for floating
     /// windows, the top maximized window for maximized ones (floating windows never cover them fully).
     pub fn in_front(&self, w: Win) -> bool {
+        if w == Win::Settings { return self.settings.open; }
         if self.is_max(w) { self.docked() == Some(w) } else { self.z.last() == Some(&w) }
     }
 }
@@ -1011,6 +1027,8 @@ impl App {
                 mixer_scroll: 0.0,
                 rack_scroll: 0.0,
                 browser_tab: 0,
+                browser_width: crate::browser::load_width(),
+                browser_context: None,
                 browser_open: views::browser::default_open(),
                 browser_folders: crate::browser::load_folders(),
                 params: Default::default(),
@@ -3202,6 +3220,7 @@ impl App {
                         Win::Plugin => self.state.plugin_pos = pos,
                         Win::Perf => self.state.perf.pos = pos,
                         Win::Tapper => self.state.tapper.pos = pos,
+                        Win::Settings => self.state.settings.pos = Some(pos),
                         w => {
                             if let Some(i) = w.slot() {
                                 let r = &mut self.state.wins[i].rect;
@@ -3246,6 +3265,10 @@ impl App {
                     s.rack_size = views::rack::snap_size(s, w, h);
                     let new = views::rack::bounds(&self.state);
                     self.damage_rect(old.union(&new));
+                }
+                Drag::BrowserResize { x0, width } => {
+                    self.state.browser_width = crate::browser::clamp_width(width + x - x0, self.state.screen.0);
+                    self.invalidate();
                 }
                 Drag::RackMixer { ch, y0, v0 } => {
                     // One insert per 10 px, up = higher (spec: ui/channel-rack.md §12).
@@ -3520,6 +3543,9 @@ impl App {
 
     /// Cursor for the current hover / drag.
     pub fn cursor(&self) -> Cursor {
+        if matches!(self.drag, Some(Drag::BrowserResize { .. })) || self.hover == Some(Action::BrowserResize) {
+            return Cursor::EwResize;
+        }
         let win_edges = match (&self.drag, &self.hover) {
             (Some(Drag::WinResize { edges, .. }), _) => *edges,
             (None, Some(Action::WinResize(_, e))) => *e,
@@ -3734,7 +3760,7 @@ impl App {
             }
             Some(Action::SongPos) => return self.song_pos_jump(),
             Some(Action::BrowserRow(i)) => {
-                if self.browser_remove_root(*i) || self.params_browser_right(*i, x, y) {
+                if self.browser_context_menu(*i, x, y) || self.params_browser_right(*i, x, y) {
                     return;
                 }
             }
@@ -3816,6 +3842,9 @@ impl App {
     }
 
     pub fn mouse_up(&mut self) {
+        if matches!(self.drag, Some(Drag::BrowserResize { .. })) {
+            crate::browser::save_width(self.state.browser_width);
+        }
         let pressed = self.pressed.take();
         // A click without a drag did its work on the press (painted then): its release only lifts the pressed look.
         if self.drag.is_none() {
@@ -5166,6 +5195,10 @@ impl App {
                     Win::Perf => s.perf.pos,
                     Win::Tapper => s.tapper.pos,
                     Win::ChannelRack => s.rack_pos,
+                    Win::Settings => {
+                        let r = views::settings::rect(s);
+                        (r.x, r.y)
+                    }
                     w => {
                         // Start from the rect as shown (kept on screen), then move it.
                         let r = s.float_rect(w);
@@ -5194,6 +5227,9 @@ impl App {
             }
             Action::CloseWin(Win::Perf) => self.close_perf(),
             Action::CloseWin(w) => s.hide(w),
+            Action::BrowserResize => {
+                self.drag = Some(Drag::BrowserResize { x0: self.mouse.0, width: s.browser_width() });
+            }
             Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserCollapse | Action::BrowserMenu | Action::BrowserSearch => {}
             Action::PlaylistArea | Action::MixerArea | Action::RackArea | Action::Swallow => {}
             Action::PlTool(_)
@@ -6832,6 +6868,85 @@ mod tests {
         assert!(app.state.settings.open && app.state.settings.tab == MIDI);
     }
 
+    #[test]
+    fn settings_drag_and_browser_resize() {
+        let mut c = Canvas::new(1920, 1080, 1.0).unwrap();
+        let mut app = App::new(None);
+        app.state.settings.open = true;
+        frame(&mut app, &mut c, None);
+        let before = views::settings::rect(&app.state);
+        let title = hit_rect(&app, &Action::WinDrag(Win::Settings));
+        app.mouse_move(title.cx(), title.cy());
+        app.mouse_down();
+        app.mouse_move(title.cx() + 120.0, title.cy() + 50.0);
+        app.mouse_up();
+        frame(&mut app, &mut c, None);
+        let after = views::settings::rect(&app.state);
+        assert_eq!((after.x, after.y), (before.x + 120.0, before.y + 50.0));
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            c.pixmap.save_png(std::path::Path::new(&dir).join("settings-moved.png")).unwrap();
+        }
+        let close = hit_rect(&app, &Action::Settings(views::settings::SAct::Close));
+        click(&mut app, &mut c, close);
+        assert!(!app.state.settings.open);
+        let splitter = hit_rect(&app, &Action::BrowserResize);
+        let width = app.state.browser_width();
+        app.mouse_move(splitter.cx(), splitter.cy());
+        app.mouse_down();
+        app.mouse_move(splitter.cx() + 140.0, splitter.cy());
+        app.mouse_up();
+        frame(&mut app, &mut c, None);
+        assert_eq!(app.state.browser_width(), width + 140.0);
+        assert_eq!(app.state.work_rect().x, width + 140.0);
+        assert!(hit_rect(&app, &Action::BrowserRow(0)).right() > width);
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            c.pixmap.save_png(std::path::Path::new(&dir).join("browser-wide.png")).unwrap();
+        }
+        assert_eq!(crate::browser::clamp_width(-100.0, 1920.0), 160.0);
+        assert_eq!(crate::browser::clamp_width(1000.0, 1920.0), 600.0);
+        app.state.screen = (640.0, 480.0);
+        let r = views::settings::rect(&app.state);
+        assert!(r.right() <= 640.0 && r.bottom() <= 480.0);
+    }
+
+    #[test]
+    fn browser_file_context_commands() {
+        use crate::browser::BCmd;
+        let mut c = Canvas::new(1920, 1080, 1.0).unwrap();
+        let dir = std::env::temp_dir().join(format!("lemon-context-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sample.wav"), b"x").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"text").unwrap();
+        let project = dir.join("test.flp");
+        std::fs::write(&project, os_flp::project::create(&test_project()).unwrap().to_bytes().unwrap()).unwrap();
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.drop_file(dir.clone());
+        frame(&mut app, &mut c, None);
+        let rows = views::browser::rows(&app.state);
+        let sample = rows.iter().position(|r| r.path.as_deref() == Some(dir.join("sample.wav").as_path())).unwrap();
+        assert!(app.browser_context_menu(sample, 100.0, 150.0));
+        assert!(app.state.playlist.popup.as_ref().unwrap().items.iter().any(|i| i.label == "Preview sample"));
+        frame(&mut app, &mut c, None);
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            c.pixmap.save_png(std::path::Path::new(&dir).join("browser-context.png")).unwrap();
+        }
+        app.browser_cmd(BCmd::SendSample);
+        assert_eq!(app.state.project.channels[app.state.selected_channel].sample_path.as_deref(), dir.join("sample.wav").to_str());
+        assert_eq!(app.state.sample_loads.len(), 1);
+        let text = rows.iter().position(|r| r.path.as_deref() == Some(dir.join("notes.txt").as_path())).unwrap();
+        app.browser_context_menu(text, 100.0, 150.0);
+        let items = &app.state.playlist.popup.as_ref().unwrap().items;
+        assert!(items.iter().any(|i| i.label == "Open containing folder"));
+        assert!(!items.iter().any(|i| i.label == "Open project" || i.label == "Remove from browser"));
+        let index = rows.iter().position(|r| r.path.as_deref() == Some(project.as_path())).unwrap();
+        app.browser_context_menu(index, 100.0, 150.0);
+        assert!(app.state.playlist.popup.as_ref().unwrap().items.iter().any(|i| i.label == "Open project"));
+        app.browser_cmd(BCmd::OpenProject);
+        assert_eq!(app.state.path.as_deref(), Some(project.as_path()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A project in the layout used before version 24.2 is refused with a dialog that says what to do.
     #[test]
     fn older_projects_get_a_dialog() {
@@ -7665,11 +7780,14 @@ mod tests {
         assert_eq!(r[i + 2].label, "Kick 01");
         assert!(matches!(r[i + 2].item, Item::Sample(_)));
         assert_eq!(r[i + 2].depth, 2);
-        // Right-click the root removes it.
+        // Right-click offers removal; only the explicit command removes the root.
         frame(&mut app, &mut c, None);
         let root = hit_rect(&app, &Action::BrowserRow(i));
         app.mouse_move(root.cx(), root.cy());
         app.mouse_down_right();
+        assert!(!app.state.browser_folders.is_empty());
+        assert!(app.state.playlist.popup.as_ref().unwrap().items.iter().any(|item| item.label == "Remove from browser"));
+        app.browser_cmd(crate::browser::BCmd::RemoveRoot);
         assert!(app.state.browser_folders.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

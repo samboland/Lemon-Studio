@@ -472,9 +472,11 @@ pub fn max_scroll(s: &State) -> f32 {
 
 pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
+    let content = r.w - 8.0;
+    let right = content - 1.0;
     ui.hit(r, Action::Swallow, "");
     // Title bar.
-    ui.c.fill_rect(Rect::span(0.0, 200.0, 83.0, 105.0), t.browser_title);
+    ui.c.fill_rect(Rect::span(0.0, right, 83.0, 105.0), t.browser_title);
     let menu_open = s.playlist.popup.as_ref().is_some_and(|p| p.x == MENU_AT.0 && p.y == MENU_AT.1);
     let mhov = ui.hit(Rect::new(2.0, 85.0, 16.0, 18.0), Action::BrowserMenu, "Browser options");
     if mhov || menu_open {
@@ -488,11 +490,13 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     icons::draw(ui.c, Icon::Back, Rect::new(34.0, 87.0, 12.0, 14.0), t.text_faint);
     ui.c.text(os_ui::Font::new(14), 52.0, 85.0, t.text_dim, "Browser");
     // Tabs (spec ui/browser.md §1).
-    ui.c.fill_rect(Rect::span(0.0, 200.0, 106.0, 141.0), t.browser_tabs);
+    ui.c.fill_rect(Rect::span(0.0, right, 106.0, 141.0), t.browser_tabs);
     const TIPS: [&str; 5] = ["All", "Current project", "Plugin database", "Online content", "Favorites"];
     for (i, icon) in [Icon::Wave, Icon::Page, Icon::Speaker, Icon::Globe, Icon::Star].into_iter().enumerate() {
-        let cx = 20.0 + 40.0 * i as f32;
-        let rr = Rect::new(cx - 18.0, 108.0, 36.0, 30.0);
+        let cell = right / 5.0;
+        let cx = cell * (i as f32 + 0.5);
+        let tab_w = 36.0_f32.min(cell - 4.0);
+        let rr = Rect::new(cx - tab_w / 2.0, 108.0, tab_w, 30.0);
         // Online content and favorites: not available yet, greyed out.
         let hov = if i >= OFF_TABS {
             ui.off(rr, TIPS[i]);
@@ -509,17 +513,17 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     // List.
     let top = list_top(s);
     if top > LIST_Y {
-        ui.c.fill_rect(Rect::new(0.0, LIST_Y, 201.0, SEARCH_ROW), t.browser_footer);
-        search_box(ui, s, Rect::new(13.0, LIST_Y + 4.0, 163.0, 20.0));
+        ui.c.fill_rect(Rect::new(0.0, LIST_Y, content, SEARCH_ROW), t.browser_footer);
+        search_box(ui, s, Rect::new(13.0, LIST_Y + 4.0, right - 37.0, 20.0));
     }
     let rows = rows(s);
     let info = info_path(&rows, s);
     let ih = if info.is_some() { INFO_H } else { 0.0 };
-    let list = Rect::span(13.0, 200.0, top, r.bottom() - FOOTER_H - ih);
+    let list = Rect::span(13.0, right, top, r.bottom() - FOOTER_H - ih);
     ui.c.fill_rect(Rect::new(0.0, top, 13.0, list.h), t.browser_tabs.shade(0.02));
     ui.c.fill_rect(list, t.browser_list);
-    ui.hit(Rect::new(0.0, top, 201.0, list.h), Action::BrowserList, "");
-    ui.c.push_clip(Rect::new(0.0, top, 201.0, list.h));
+    ui.hit(Rect::new(0.0, top, content, list.h), Action::BrowserList, "");
+    ui.c.push_clip(Rect::new(0.0, top, content, list.h));
     let cats: [Color; 2] = [t.cat_project, t.cat_plugin_db];
     let scroll = s.browser_scroll.min((rows.len() as f32 * ROW_H - list.h).max(0.0)).max(0.0);
     let sel = s.browser_sel.as_deref();
@@ -529,7 +533,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
             continue;
         }
         let x = 13.0 + INDENT * f32::from(row.depth);
-        let rect = Rect::new(13.0, y, 188.0, ROW_H);
+        let rect = Rect::new(13.0, y, content - 13.0, ROW_H);
         // A parameter row's hint carries its value (spec: plugins/plugin-parameters.md §6); read for the hovered row only.
         let hint = match row.item {
             Item::Param(key, index) if ui.hovering(rect) => crate::params::row_hint(s, key, index),
@@ -560,7 +564,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
             _ => c,
         };
         icons::draw(ui.c, row.icon, Rect::new(x + 6.0, y + 3.0, 17.0, 17.0), ic);
-        let (f, w) = (os_ui::Font::new(17), 200.0 - x - 27.0);
+        let (f, w) = (os_ui::Font::new(17), (right - x - 27.0).max(0.0));
         let label = if row.path.is_some() { middle_cut(ui, f, &row.label, w) } else { row.label.clone() };
         ui.c.text_clip(f, x + 25.0, y, w, c, &label);
     }
@@ -570,11 +574,11 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     }
     ui.c.pop_clip();
     if let Some(p) = &info {
-        paint_info(ui, s, p, Rect::new(0.0, list.bottom(), 201.0, ih));
+        paint_info(ui, s, p, Rect::new(0.0, list.bottom(), content, ih));
     }
     // Footer.
     let fy = r.bottom() - 27.0;
-    ui.c.fill_rect(Rect::new(0.0, fy, 201.0, 27.0), t.browser_footer);
+    ui.c.fill_rect(Rect::new(0.0, fy, content, 27.0), t.browser_footer);
     // Tags: not available yet, greyed out.
     let tags = Rect::new(13.0, fy + 4.0, 41.0, 20.0);
     ui.off(tags, "Tags");
@@ -582,17 +586,18 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     ui.c.text_center(os_ui::Font::condensed(11, 6).bold(), tags, ui.t.tx(0xc0c8cc), "TAGS");
     ui.veil(tags, t.browser_footer);
     if top == LIST_Y {
-        search_box(ui, s, Rect::new(57.0, fy + 4.0, 119.0, 20.0));
+        search_box(ui, s, Rect::new(57.0, fy + 4.0, right - 81.0, 20.0));
     } else {
-        ui.c.fill_rrect(Rect::new(57.0, fy + 4.0, 119.0, 20.0), 3.0, t.sunken);
+        ui.c.fill_rrect(Rect::new(57.0, fy + 4.0, right - 81.0, 20.0), 3.0, t.sunken);
     }
-    icons::draw(ui.c, Icon::Folder, Rect::new(158.0, fy + 7.0, 14.0, 14.0), t.text_faint);
-    let glass = Rect::new(178.0, fy + 3.0, 21.0, 21.0);
+    icons::draw(ui.c, Icon::Folder, Rect::new(right - 42.0, fy + 7.0, 14.0, 14.0), t.text_faint);
+    let glass = Rect::new(right - 22.0, fy + 3.0, 21.0, 21.0);
     let hov = ui.hit(glass, Action::BrowserSearch, "Search the browser (Enter = find next, Esc = clear)");
-    icons::draw(ui.c, Icon::Search, Rect::new(180.0, fy + 5.0, 17.0, 17.0), if hov { t.browser_search.shade(0.2) } else { t.browser_search });
+    icons::draw(ui.c, Icon::Search, Rect::new(right - 20.0, fy + 5.0, 17.0, 17.0), if hov { t.browser_search.shade(0.2) } else { t.browser_search });
     // Splitter.
-    ui.c.fill_rect(Rect::new(201.0, 83.0, 6.0, r.h), t.splitter);
-    ui.c.fill_rect(Rect::new(207.0, 83.0, 2.0, r.h), t.splitter_dark);
+    ui.c.fill_rect(Rect::new(content, 83.0, 6.0, r.h), t.splitter);
+    ui.c.fill_rect(Rect::new(content + 6.0, 83.0, 2.0, r.h), t.splitter_dark);
+    ui.hit(Rect::new(content, 83.0, 8.0, r.h), Action::BrowserResize, "Drag to resize the browser");
 }
 
 /// A long disk name shortened in the middle with ".." to fit `w` (FL screenshots, spec §6).

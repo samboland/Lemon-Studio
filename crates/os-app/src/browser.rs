@@ -117,6 +117,43 @@ impl App {
             }
             // A background scan (spec: ui/plugin-manager.md §4); plugins in use stay where they are.
             BCmd::Rescan => self.start_scan(crate::plugin_db::Mode::Changed),
+            BCmd::OpenProject => {
+                let path = s.browser_context.as_ref().and_then(|row| project_path(&row.item));
+                if let Some(path) = path { self.drop_file(path); }
+            }
+            BCmd::PreviewSample => {
+                let path = s.browser_context.as_ref().and_then(|row| match &row.item { Item::Sample(path) => Some(path.clone()), _ => None });
+                if let Some(path) = path { self.preview_sample(&path); }
+            }
+            BCmd::SendSample => {
+                let Some(Item::Sample(path)) = s.browser_context.as_ref().map(|row| row.item.clone()) else { return None };
+                let Some(ch) = s.project.channels.get_mut(s.selected_channel).filter(|ch| ch.kind.is_sampler()) else {
+                    return Some("The selected channel is not a sampler".into());
+                };
+                ch.sample_path = Some(path.clone());
+                s.sample_loads.push((s.selected_channel, path));
+                s.piano.dirty = true;
+            }
+            BCmd::Reveal => {
+                let Some(row) = &s.browser_context else { return None };
+                let Some(path) = &row.path else { return None };
+                let folder = if row.open.is_some() { path.as_path() } else { path.parent().unwrap_or(path) };
+                #[cfg(not(test))]
+                {
+                    let program = if cfg!(windows) { "explorer.exe" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                    if let Err(e) = std::process::Command::new(program).arg(folder).spawn() {
+                        return Some(format!("Could not open {}: {e}", folder.display()));
+                    }
+                }
+                #[cfg(test)]
+                let _ = folder;
+            }
+            BCmd::RemoveRoot => {
+                let path = s.browser_context.as_ref().and_then(|row| row.path.clone());
+                if let Some(i) = view::rows(s).iter().position(|row| row.depth == 0 && row.path == path) {
+                    self.browser_remove_root(i);
+                }
+            }
         }
         None
     }
@@ -124,7 +161,7 @@ impl App {
     /// Whether the mouse is over the docked browser.
     pub(crate) fn over_browser(&self) -> bool {
         let (x, y) = self.mouse;
-        self.state.show_browser && x < crate::views::BROWSER_W && y >= crate::views::WORK_Y
+        self.state.show_browser && x >= 0.0 && x < self.state.browser_width() && y >= crate::views::WORK_Y
     }
 
     /// Whether typed letters belong to the browser search (the typing keyboard leaves them alone).
@@ -349,6 +386,59 @@ impl App {
         self.invalidate();
         true
     }
+
+    pub(crate) fn browser_context_menu(&mut self, i: usize, x: f32, y: f32) -> bool {
+        let s = &mut self.state;
+        let Some(row) = view::rows(s).into_iter().nth(i).filter(|row| row.path.is_some()) else { return false };
+        select(s, &row.key);
+        let item = |label, cmd| PItem::new(label, Cmd::Browser(cmd));
+        let mut items = Vec::new();
+        if project_path(&row.item).is_some() {
+            items.push(item("Open project", BCmd::OpenProject));
+        }
+        if matches!(row.item, Item::Sample(_)) {
+            items.push(item("Preview sample", BCmd::PreviewSample));
+            let send = item("Send to selected channel", BCmd::SendSample);
+            items.push(if s.project.channels.get(s.selected_channel).is_some_and(|ch| ch.kind.is_sampler()) { send } else { send.off() });
+        }
+        if !items.is_empty() { items.push(PItem::sep()); }
+        items.push(item(if row.open.is_some() { "Open folder" } else { "Open containing folder" }, BCmd::Reveal));
+        items.push(item("Refresh", BCmd::Reread));
+        if row.depth == 0 && row.open.is_some() {
+            items.push(PItem::sep());
+            items.push(item("Remove from browser", BCmd::RemoveRoot));
+        }
+        s.browser_context = Some(row);
+        s.playlist.popup = Some(Popup { x, y, items, sub: None });
+        self.invalidate();
+        true
+    }
+}
+
+impl crate::app::State {
+    pub fn browser_width(&self) -> f32 {
+        clamp_width(self.browser_width, self.screen.0)
+    }
+}
+
+pub(crate) fn clamp_width(width: f32, screen: f32) -> f32 {
+    let width = if width.is_finite() { width } else { crate::views::BROWSER_W };
+    width.clamp(160.0, (screen - 320.0).clamp(160.0, 600.0))
+}
+
+pub(crate) fn load_width() -> f32 {
+    if cfg!(test) { return crate::views::BROWSER_W; }
+    os_paths::user_file("browser_width.txt").and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| text.trim().parse::<f32>().ok()).filter(|width| width.is_finite())
+        .map(|width| width.clamp(160.0, 600.0)).unwrap_or(crate::views::BROWSER_W)
+}
+
+pub(crate) fn save_width(width: f32) {
+    if cfg!(test) { return; }
+    if let Some(path) = os_paths::user_file("browser_width.txt") {
+        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        let _ = std::fs::write(path, width.to_string());
+    }
 }
 
 /// `browser_folders.txt` in the user folder (`os_paths::user_dir`): one dropped folder per line (spec §6).
@@ -511,6 +601,11 @@ pub enum BCmd {
     Collapse,
     Reread,
     Rescan,
+    OpenProject,
+    PreviewSample,
+    SendSample,
+    Reveal,
+    RemoveRoot,
 }
 
 /// The browser options menu, from the FL screenshot (spec §4).
