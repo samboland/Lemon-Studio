@@ -8,7 +8,10 @@ use os_ui::{Color, Font, Rect};
 use super::{resize_zones, window_body, FrameInfo};
 use crate::app::{Action, Live, Scroll, State, Ui, Win};
 use crate::icons::{self, Icon};
+use crate::note_props::{self, Field};
 use crate::piano::{self, Geom, Lane, Overlay, Tool};
+use crate::piano_menu::PrAct;
+use crate::piano_scale::KeyScale;
 
 /// Default grid row pitch: 17 px of fill plus a 1 px separator (§3); the vertical zoom changes it (§3a).
 pub const ROW: f32 = 18.0;
@@ -29,6 +32,45 @@ pub fn is_black(key: i32) -> bool {
 /// `c` minus `d` on every channel (the grid's line colors are the row fill minus a constant, §3).
 fn sub(c: Color, d: u8) -> Color {
     Color { r: c.r.saturating_sub(d), g: c.g.saturating_sub(d), b: c.b.saturating_sub(d), a: c.a }
+}
+
+fn add(c: Color, d: u8) -> Color {
+    Color { r: c.r.saturating_add(d), g: c.g.saturating_add(d), b: c.b.saturating_add(d), a: c.a }
+}
+
+/// `c` with its hue turned by `deg` degrees (saturation and value kept).
+fn hue_turn(c: Color, deg: f32) -> Color {
+    let (r, g, b) = (f32::from(c.r) / 255.0, f32::from(c.g) / 255.0, f32::from(c.b) / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let d = max - min;
+    if d <= 0.0 {
+        return c;
+    }
+    let h = if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let h = (h + deg).rem_euclid(360.0);
+    let x = d * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match (h / 60.0) as u32 {
+        0 => (d, x, 0.0),
+        1 => (x, d, 0.0),
+        2 => (0.0, d, x),
+        3 => (0.0, x, d),
+        4 => (x, 0.0, d),
+        _ => (d, 0.0, x),
+    };
+    let to = |v: f32| ((v + min) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color { r: to(r1), g: to(g1), b: to(b1), a: c.a }
+}
+
+/// A note colour (MIDI channel, §6): colour 0 is the theme's note colour, the other fifteen turn its hue around the
+/// colour wheel in equal steps (Lemon Studio choice of colours).
+pub fn note_color(c: Color, color: u8) -> Color {
+    if color == 0 { c } else { hue_turn(c, f32::from(color & 0x0f) * 360.0 / 16.0) }
 }
 
 /// The regions of the window for a given window rect `r` (§1; offsets from the client corner at
@@ -76,12 +118,12 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let outer = r;
     let floating = !s.wins[Win::PianoRoll.slot().unwrap_or(0)].maxed && r.h >= 2.0 * crate::app::TITLE_H;
     let (r, _) = super::framed(ui, s, Win::PianoRoll, r, &title, 365.0, true);
-    // The title's › (channel menu): not available yet, greyed out.
+    // The title's › (§1): which channel the piano roll edits.
     let ax = r.x + 365.0 + ui.c.text_width(Font::new(17), &title);
-    ui.c.text(Font::new(17), ax, r.y + 1.0, t.text_faint, "\u{203a}");
-    ui.off(Rect::new(ax - 3.0, r.y + 2.0, 13.0, 19.0), "Piano roll channel menu");
+    let hov = ui.hit(Rect::new(ax - 3.0, r.y + 2.0, 13.0, 19.0), Action::PianoRoll(PrAct::ChannelMenu), "Piano roll channel: choose the channel to edit");
+    ui.c.text(Font::new(17), ax, r.y + 1.0, if hov { ui.t.tx(0xffffff) } else { t.text_dim }, "\u{203a}");
     let shift = if floating { -4.0 } else { 0.0 };
-    toolbar(ui, r, shift, s.piano.tool);
+    toolbar(ui, s, r, shift);
     if r.h < 2.0 * crate::app::TITLE_H {
         return; // collapsed to the title bar
     }
@@ -98,7 +140,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let tab = l.tab;
     let lemon = super::lemon(ui);
     ui.c.fill_rect(tab, t.window_title);
-    let green = t.note_top.mix(t.note_bottom, 0.6);
+    // The tile shows the colour new notes get (§6); the glyph at its top right is the slide switch, lit when new notes
+    // are slide notes.
+    let green = note_color(t.note_top.mix(t.note_bottom, 0.6), piano::color_of(&s.piano.template));
     if lemon {
         // Lemon (spec: ui/lemon-design.md §6): a rounded colour tile instead of the slanted tab.
         ui.c.fill_rrect(Rect::new(tab.x + 3.0, tab.y + 3.0, tab.w - 6.0, tab.h - 6.0), lk::r_btn(t), green);
@@ -107,23 +151,26 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         ui.c.line(tab.x + 0.5, tab.bottom() - 0.5, tab.x + 31.0, tab.y + 0.5, 1.0, t.note_top.shade(0.15));
     }
     let ink = green.shade(-0.3);
-    ui.c.polyline(&[(tab.right() - 15.0, tab.y + 16.0), (tab.right() - 10.0, tab.y + 16.0), (tab.right() - 7.0, tab.y + 7.0), (tab.right() - 3.0, tab.y + 7.0)], 1.6, ink);
+    ui.hit(tab, Action::PianoRoll(PrAct::ColorMenu), "Note color / MIDI channel of new notes: click to choose, color or select notes by color");
+    let slide = Rect::new(tab.right() - 18.0, tab.y + 3.0, 17.0, 16.0);
+    let slide_on = s.piano.template.slide();
+    let slide_hov = ui.hit(slide, Action::PianoRoll(PrAct::Slide), if slide_on { "Slide: new notes are slide notes (click: normal notes)" } else { "Slide: click to draw slide notes" });
+    let slide_ink = if slide_on { ui.t.tx(0xffffff) } else if slide_hov { ink.shade(0.3) } else { ink };
+    ui.c.polyline(&[(tab.right() - 15.0, tab.y + 16.0), (tab.right() - 10.0, tab.y + 16.0), (tab.right() - 7.0, tab.y + 7.0), (tab.right() - 3.0, tab.y + 7.0)], 1.6, slide_ink);
     ui.c.fill_polygon(&[(tab.right() - 4.0, tab.bottom() - 18.0), (tab.right() - 4.0, tab.bottom() - 5.0), (tab.right() - 17.0, tab.bottom() - 5.0)], ink);
-    // Note colours: not available yet, greyed out.
-    ui.off(tab, "Note color");
-    ui.veil(tab, t.window_title);
 
     overview(ui, s, &l, &g, notes, ch);
     let markers: Vec<(u32, &str)> =
         s.project.pattern(s.pattern).map_or(&[][..], |p| &p.markers).iter().map(|m| (m.position, m.name.as_str())).collect();
     ruler(ui, &l, &g, range, s.piano.marker, &markers);
+    let v = s.piano.view;
     // Lit keys: the one held with the mouse and this channel's notes playing now (§4).
     let mut lit: Vec<i32> = s.piano.held.into_iter().collect();
     lit.extend(s.piano.typed.iter().filter(|&&(c, _)| Some(c) == ch).map(|&(_, k)| k));
     lit.extend(f.sounding.iter().filter(|&&(c, _)| Some(c) == ch).map(|&(_, k)| i32::from(k)));
     ui.live(Live::Sounding, l.keys);
-    keyboard(ui, &l, &g, &lit);
-    grid(ui, &l, &g, range);
+    keyboard(ui, &l, &g, &lit, v.all_labels, s.piano.scale);
+    grid(ui, &l, &g, range, s.piano.scale);
 
     // Notes: ghosts of the other channels first (when shown, Alt+V), then this channel's (§5).
     ui.hit(l.grid, Action::PianoGrid, "Piano roll: click to add a note, drag a note to move it or its end to resize, right-click to delete");
@@ -137,6 +184,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let label_font = Font::new(11);
     for (i, n) in notes.iter().enumerate().filter(|(_, n)| Some(n.channel) == ch) {
         let Some(nr) = g.note_rect(n) else { continue };
+        let tint = |c: Color| note_color(c, piano::color_of(n));
         let vis = nr.intersect(&l.grid);
         if vis.w <= 0.0 || vis.h <= 0.0 {
             continue;
@@ -150,7 +198,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             // Muted (§9): grey body, measured from FL.
             (ui.t.s(0x6d7276), ui.t.s(0x63686c), ui.t.s(0x474a4d), ui.t.tx(0xc4c8cc))
         } else {
-            (t.note_top, t.note_bottom, t.note_rim, t.note_text)
+            (tint(t.note_top), tint(t.note_bottom), tint(t.note_rim), t.note_text)
         };
         let body = Rect::new(nr.x + 1.0, nr.y + 1.0, (nr.w - 2.0).max(1.0), nr.h - 2.0);
         if lemon {
@@ -180,7 +228,13 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
                 at += iv;
             }
         }
-        if nr.w > 12.0 && g.row >= 13.0 {
+        // A slide note (§5): a ramp at its start.
+        if n.slide() && nr.w > 6.0 {
+            let h = (body.h - 4.0).max(2.0);
+            let (x0, y0) = (body.x + 2.0, body.y + 2.0);
+            ui.c.fill_polygon(&[(x0, y0 + h), (x0 + h.min(nr.w - 4.0), y0 + h), (x0 + h.min(nr.w - 4.0), y0)], text.with_alpha(150));
+        }
+        if nr.w > 12.0 && g.row >= 13.0 && v.note_names {
             let label = key_name(i32::from(n.key));
             let w = ui.c.text_width(label_font, &label);
             let shown = if w <= nr.w - 5.0 { label } else { format!("{}..", &label[..1]) };
@@ -229,6 +283,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     if s.lane_menu {
         lane_menu(ui, s, &l);
     }
+    if s.piano.props.is_some() {
+        props_dialog(ui, s, &l);
+    }
     resize_zones(ui, s, Win::PianoRoll, outer);
 }
 
@@ -248,46 +305,53 @@ fn arrow_button(ui: &mut Ui, b: Rect, dir: u8, target: Scroll) {
     kit::arrow_button(ui.c, ui.t, b, d, st);
 }
 
-/// The square button with a dot above the vertical scroll bar (§1a): not available yet, greyed out.
+/// The square button with a dot above the vertical scroll bar (§1a): the view options menu.
 fn corner_button(ui: &mut Ui, b: Rect) {
     use os_ui::kit;
-    ui.off(b, "Piano roll view options");
-    kit::flat_button(ui.c, ui.t, b, kit::State::NORMAL.with_disabled(true));
+    let act = Action::PianoRoll(PrAct::View);
+    let hov = ui.hit(b, act.clone(), "Piano roll view options: ghost channels, key labels, note names");
+    kit::flat_button(ui.c, ui.t, b, kit::State::new(hov, ui.down(b, &act), false));
     let (cx, cy) = ((b.x + b.w / 2.0).round(), (b.y + b.h / 2.0).round());
     ui.c.fill_rect(Rect::new(cx - 2.0, cy - 2.0, 3.0, 3.0), ui.t.s(0x000000));
-    ui.veil(b, ui.t.scrollbar);
 }
 
-/// Toolbar icons in the title bar (§2): the editing tools and undo; the menus and helpers that are not available yet
-/// are greyed out. `shift` moves the icons (the floating window draws them 4 px further left, §1a).
-fn toolbar(ui: &mut Ui, r: Rect, shift: f32, active: Tool) {
+/// Toolbar icons in the title bar (§2): options, tools, snap, note properties, the scale and chord helpers, undo and
+/// the editing tools. `shift` moves the icons (the floating window draws them 4 px further left, §1a).
+fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
     let t = ui.t;
+    let active = s.piano.tool;
     let ox = r.x - 209.0 + shift;
-    let items: [(f32, Icon, &'static str, Option<Action>); 15] = [
-        (222.0, Icon::ArrowRight, "Piano roll options", None),
-        (242.0, Icon::MidiControl, "Piano roll tools: quantize, chop, glue, strum, arpeggiate, randomize...", Some(Action::PianoToolsMenu)),
-        (263.0, Icon::Magnet, "Piano roll snap", None),
-        (283.0, Icon::Note, "Note properties", None),
-        (305.0, Icon::Blend, "Scale and chord helpers", None),
-        (327.0, Icon::Undo, "Undo (Ctrl+Z)", Some(Action::PianoUndo)),
-        (360.0, Icon::Pencil, "Draw (P)", Some(Action::PianoTool(Tool::Draw))),
-        (380.0, Icon::Brush, "Paint (B): drag to paint notes along the row", Some(Action::PianoTool(Tool::Paint))),
-        (402.0, Icon::Plus, "Paint and add", None),
-        (422.0, Icon::Delete, "Delete (D): click or swipe to delete notes", Some(Action::PianoTool(Tool::Delete))),
-        (442.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes", Some(Action::PianoTool(Tool::Mute))),
-        (463.0, Icon::Slice, "Slice (C): drag a line to cut notes", Some(Action::PianoTool(Tool::Slice))),
-        (485.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds", Some(Action::PianoTool(Tool::Select))),
-        (507.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
-        (527.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
+    let snap = format!("Piano roll snap: {} (hold Alt to bypass)", s.piano.view.snap.label());
+    let helpers = match (s.piano.scale, s.piano.stamp) {
+        (None, None) => "Scale and chord helpers: scale highlighting, chord stamp".to_string(),
+        (k, c) => format!("Scale and chord helpers: {}{}", k.map_or("no scale".into(), |k| k.name()), c.map_or(String::new(), |c| format!(", stamp {}", c.label()))),
+    };
+    // Lit besides the active tool: the open Note properties dialog, helpers in use.
+    let lit = [(Action::PianoRoll(PrAct::Props), s.piano.props.is_some()), (Action::PianoRoll(PrAct::Helpers), s.piano.scale.is_some() || s.piano.stamp.is_some())];
+    let items: [(f32, Icon, String, Option<Action>); 15] = [
+        (222.0, Icon::ArrowRight, "Piano roll options".into(), Some(Action::PianoRoll(PrAct::Options))),
+        (242.0, Icon::MidiControl, "Piano roll tools: quantize, chop, glue, strum, arpeggiate, randomize...".into(), Some(Action::PianoToolsMenu)),
+        (263.0, Icon::Magnet, snap, Some(Action::PianoRoll(PrAct::Snap))),
+        (283.0, Icon::Note, "Note properties: the selected note, or what new notes get (double-click a note)".into(), Some(Action::PianoRoll(PrAct::Props))),
+        (305.0, Icon::Blend, helpers, Some(Action::PianoRoll(PrAct::Helpers))),
+        (327.0, Icon::Undo, "Undo (Ctrl+Z)".into(), Some(Action::PianoUndo)),
+        (360.0, Icon::Pencil, "Draw (P)".into(), Some(Action::PianoTool(Tool::Draw))),
+        (380.0, Icon::Brush, "Paint (B): drag to paint notes along the row".into(), Some(Action::PianoTool(Tool::Paint))),
+        (402.0, Icon::Plus, "Paint and add: drag to add notes wherever the mouse goes".into(), Some(Action::PianoTool(Tool::PaintAdd))),
+        (422.0, Icon::Delete, "Delete (D): click or swipe to delete notes".into(), Some(Action::PianoTool(Tool::Delete))),
+        (442.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes".into(), Some(Action::PianoTool(Tool::Mute))),
+        (463.0, Icon::Slice, "Slice (C): drag a line to cut notes".into(), Some(Action::PianoTool(Tool::Slice))),
+        (485.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds".into(), Some(Action::PianoTool(Tool::Select))),
+        (507.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back".into(), Some(Action::PianoTool(Tool::Zoom))),
+        (527.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line".into(), Some(Action::PianoTool(Tool::Playback))),
     ];
     for (x, icon, hint, action) in items {
         let b = Rect::new(ox + x - 9.0, r.y + 2.0, 18.0, 18.0);
         let Some(action) = action else {
-            ui.off(b, hint);
             icons::draw(ui.c, icon, b, t.text_faint);
             continue;
         };
-        let on = action == Action::PianoTool(active);
+        let on = action == Action::PianoTool(active) || lit.iter().any(|(a, l)| *l && *a == action);
         let hov = ui.hit(b, action, hint);
         let c = if super::lemon(ui) {
             // Lemon: the active tool is a lit rounded square with a dark glyph.
@@ -362,13 +426,14 @@ fn ruler(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>, marker: u
         ui.c.text(Font::new(13), x + 2.0, rr.y + 1.0, t.text_dim, &format!("{}", b + 1));
     }
     // Time markers (§10a): a flag line and the name, drawn like the playlist's marker tabs.
-    for &(tick, name) in markers {
+    for (i, &(tick, name)) in markers.iter().enumerate() {
         let x = g.x_of(tick as f32).round();
         if x < l.grid.x - 200.0 || x > l.grid.right() {
             continue;
         }
         let w = ui.c.text_width(Font::new(12), name) + 8.0;
         let tab = Rect::new(x, rr.y + 1.0, w, 15.0);
+        ui.hit(tab, Action::PianoRoll(PrAct::Marker(i)), "Time marker: drag to move, double-click to rename, right-click to rename or delete");
         ui.c.fill_rect(tab, t.window_title);
         ui.c.fill_rect(Rect::new(x, rr.y + 1.0, 1.0, rr.h - 1.0), t.text);
         ui.c.text(Font::new(12), x + 4.0, rr.y + 2.0, t.text, name);
@@ -383,7 +448,9 @@ fn ruler(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>, marker: u
     ui.c.pop_clip();
 }
 
-fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
+/// `all_labels`: every key is named, not only the Cs (§3, a view option); `scale`: keys of the highlighted scale get a
+/// mark at their playing end, the root a longer one (§2 helpers).
+fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32], all_labels: bool, scale: Option<KeyScale>) {
     let t = ui.t;
     let k = l.keys;
     ui.hit(k, Action::PianoKeys, "Keyboard");
@@ -434,6 +501,9 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
             5 => ui.c.fill_rect(Rect::new(k.x, y + row - 1.0, k.w - 1.0, 1.0), sep),
             _ => {}
         }
+        if all_labels && !is_black(key) && key.rem_euclid(12) != 0 && row >= 10.0 {
+            ui.c.text_right(Font::new(11), k.right() - 4.0, y + 1.0 + (row - ROW) / 2.0, t.key_label, &key_name(key));
+        }
     }
     for key in lo..=hi {
         if is_black(key) {
@@ -442,14 +512,24 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
             if lemon {
                 // Rounded at the playing end; the left end runs under the clip.
                 ui.c.fill_rrect(Rect::new(k.x - 6.0, y, 51.0, row), 3.0f32.min(row / 2.0), right);
-                continue;
+            } else {
+                for i in 0..6 {
+                    let c = left.mix(right, i as f32 / 5.0);
+                    let x = k.x + if i == 0 { 0.0 } else { 10.0 + 8.0 * (i - 1) as f32 };
+                    let w = if i == 0 { 10.0 } else if i == 5 { 3.0 } else { 8.0 };
+                    ui.c.fill_rect(Rect::new(x, y, w, row), c);
+                }
             }
-            for i in 0..6 {
-                let c = left.mix(right, i as f32 / 5.0);
-                let x = k.x + if i == 0 { 0.0 } else { 10.0 + 8.0 * (i - 1) as f32 };
-                let w = if i == 0 { 10.0 } else if i == 5 { 3.0 } else { 8.0 };
-                ui.c.fill_rect(Rect::new(x, y, w, row), c);
+            if all_labels && row >= 10.0 {
+                ui.c.text_right(Font::new(10), k.x + 42.0, y + 1.0 + (row - ROW) / 2.0, t.key_white, &key_name(key));
             }
+        }
+    }
+    if let Some(sc) = scale {
+        for key in (lo..=hi).filter(|&k| sc.contains(k)) {
+            let w = if sc.is_root(key) { 6.0 } else { 3.0 };
+            let y = g.y_of(key);
+            ui.c.fill_rect(Rect::new(k.right() - 1.0 - w, y + 1.0, w, (row - 3.0).max(1.0)), t.pill);
         }
     }
     ui.c.pop_clip();
@@ -460,15 +540,15 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
 
 /// Vertical step / beat / bar lines over `area`, in `line(fill)` colors per horizontal band.
 fn columns(ui: &mut Ui, g: &Geom, area: Rect, bands: &[(f32, f32, Color)], bar: Color) {
-    let step = g.step as f32 * g.ppt;
+    let step = g.cell as f32 * g.ppt;
     let show_steps = step >= 5.0;
     let beat_px = g.beat as f32 * g.ppt;
-    let first = (g.scroll_x / g.step as f32).floor() as i64;
-    let last = ((g.scroll_x + area.w / g.ppt) / g.step as f32).ceil() as i64;
-    let per_beat = i64::from((g.beat / g.step).max(1));
-    let per_bar = i64::from((g.bar / g.step).max(1));
+    let first = (g.scroll_x / g.cell as f32).floor() as i64;
+    let last = ((g.scroll_x + area.w / g.ppt) / g.cell as f32).ceil() as i64;
+    let per_beat = i64::from((g.beat / g.cell).max(1));
+    let per_bar = i64::from((g.bar / g.cell).max(1));
     for i in first..=last {
-        let x = g.x_of((i * i64::from(g.step)) as f32).floor();
+        let x = g.x_of((i * i64::from(g.cell)) as f32).floor();
         if x < area.x || x >= area.right() {
             continue;
         }
@@ -486,18 +566,19 @@ fn columns(ui: &mut Ui, g: &Geom, area: Rect, bands: &[(f32, f32, Color)], bar: 
     }
 }
 
-fn grid(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>) {
-    grid_rows(ui, l, g, l.grid, false);
+fn grid(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>, scale: Option<KeyScale>) {
+    grid_rows(ui, l, g, l.grid, false, scale);
     if let Some((x0, x1)) = range {
         let r = Rect::span(x0, x1, l.grid.y, l.grid.bottom()).intersect(&l.grid);
         if r.w > 0.0 {
-            grid_rows(ui, l, g, r, true);
+            grid_rows(ui, l, g, r, true, scale);
         }
     }
 }
 
-/// The note-grid rows and columns, clipped to `clip` (`selecting` = the red time-selection tint).
-fn grid_rows(ui: &mut Ui, l: &Layout, g: &Geom, clip: Rect, selecting: bool) {
+/// The note-grid rows and columns, clipped to `clip` (`selecting` = the red time-selection tint). With a highlighted
+/// scale (§2 helpers) the rows outside it are darker and the root's rows lighter (Lemon Studio choice of shades).
+fn grid_rows(ui: &mut Ui, l: &Layout, g: &Geom, clip: Rect, selecting: bool, scale: Option<KeyScale>) {
     let t = ui.t;
     let gr = l.grid;
     let (white, black) = if selecting { (t.pr_row_sel, t.pr_row_black_sel) } else { (t.pr_row, t.pr_row_black) };
@@ -507,6 +588,11 @@ fn grid_rows(ui: &mut Ui, l: &Layout, g: &Geom, clip: Rect, selecting: bool) {
     for key in lo..=hi {
         let y = g.y_of(key);
         let fill = if is_black(key) { black } else { white };
+        let fill = match scale {
+            Some(sc) if sc.is_root(key) => add(fill, 0x0c),
+            Some(sc) if !sc.contains(key) => sub(fill, 0x0e),
+            _ => fill,
+        };
         ui.c.fill_rect(Rect::new(gr.x, y, gr.w, g.row - 1.0), fill);
         ui.c.fill_rect(Rect::new(gr.x, y + g.row - 1.0, gr.w, 1.0), sub(white, 0x0a));
         bands.push((y, g.row - 1.0, fill));
@@ -682,5 +768,53 @@ fn lane_menu(ui: &mut Ui, s: &State, l: &Layout) {
             ui.c.fill_rect(rr, t.menu_pop_hi);
         }
         ui.c.text(font, rr.x + 20.0, rr.y + 2.0, t.menu_pop_text, lane.menu_name());
+    }
+}
+
+/// The Note properties dialog (§12): a row per property with − / + (Shift: ten at a time), a click on a switch's
+/// value toggles it, a right-click puts the default back; over the middle of the grid, like FL's floating dialog.
+fn props_dialog(ui: &mut Ui, s: &State, l: &Layout) {
+    let t = ui.t;
+    let Some(p) = s.piano.props else { return };
+    let Some(n) = note_props::shown(s) else { return };
+    const ROW: f32 = 22.0;
+    const HEAD: f32 = 24.0;
+    let fields = note_props::fields(p.target);
+    let (w, h) = (300.0, HEAD + fields.len() as f32 * ROW + 6.0);
+    let g = l.grid;
+    let r = Rect::new((g.x + (g.w - w) / 2.0).max(g.x).round(), (g.y + 8.0).round(), w, h);
+    ui.c.fill_rect(r, t.menu_pop);
+    ui.c.stroke_rrect(r.inset(1.0), 0.0, 2.0, t.menu_pop_border);
+    ui.hit(r, Action::Swallow, "");
+    let head = Rect::new(r.x + 2.0, r.y + 2.0, r.w - 4.0, HEAD - 4.0);
+    ui.c.fill_rect(head, t.menu_pop_head);
+    let title = match p.target {
+        note_props::Target::Note(_) => format!("Note properties - {}", key_name(i32::from(n.key))),
+        note_props::Target::NewNotes => "Note properties - new notes".to_string(),
+    };
+    ui.c.text(Font::new(13), head.x + 6.0, head.y + 2.0, t.menu_pop_head_text, &title);
+    let close = Rect::new(head.right() - 20.0, head.y, 20.0, head.h);
+    let hov = ui.hit(close, Action::PianoRoll(PrAct::PropsClose), "Close (Esc)");
+    ui.c.text_center(Font::new(14), close, if hov { ui.t.tx(0xffffff) } else { t.menu_pop_head_text }, "\u{00d7}");
+    let font = Font::new(13);
+    for (i, f) in fields.into_iter().enumerate() {
+        let rr = Rect::new(r.x + 2.0, r.y + HEAD + i as f32 * ROW, r.w - 4.0, ROW);
+        ui.c.text(font, rr.x + 8.0, rr.y + 3.0, t.menu_pop_text, f.label());
+        let minus = Rect::new(rr.right() - 128.0, rr.y + 2.0, 20.0, ROW - 4.0);
+        let plus = Rect::new(rr.right() - 24.0, rr.y + 2.0, 20.0, ROW - 4.0);
+        let val = Rect::new(minus.right() + 2.0, rr.y + 2.0, plus.x - minus.right() - 4.0, ROW - 4.0);
+        let hint = if f.is_switch() { "Click to switch, right-click: default" } else { "Right-click: default" };
+        let vh = ui.hit(val, Action::PianoRoll(PrAct::PropValue(f)), hint);
+        ui.c.fill_rect(val, if vh { t.menu_pop_hi } else { ui.t.s(0x0e1214) });
+        ui.c.text_center(font, val, t.text, &note_props::text(&n, f, s.project.ppq));
+        if f == Field::Color {
+            let sw = Rect::new(val.x + 4.0, val.y + 4.0, 10.0, val.h - 8.0);
+            ui.c.fill_rect(sw, note_color(t.note_top.mix(t.note_bottom, 0.5), piano::color_of(&n)));
+        }
+        for (b, dir, glyph) in [(minus, -1i8, "-"), (plus, 1, "+")] {
+            let hov = ui.hit(b, Action::PianoRoll(PrAct::Prop(f, dir)), "Shift: ten at a time; right-click: default");
+            ui.c.fill_rect(b, if hov { t.button_hi } else { t.menu_pop.shade(0.1) });
+            ui.c.text_center(Font::new(14), b, t.menu_pop_text, glyph);
+        }
     }
 }

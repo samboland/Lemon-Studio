@@ -16,6 +16,9 @@ pub enum Tool {
     #[default]
     Draw,
     Paint,
+    /// Paint and add (§2 toolbar): every snap slot the mouse crosses gets a note, on whatever row it is over (Lemon
+    /// Studio choice for this entry: Paint along one row, this one draws freely across rows).
+    PaintAdd,
     Delete,
     Mute,
     Slice,
@@ -100,6 +103,21 @@ pub struct PianoState {
     pub split: crate::piano_split::Split,
     /// Last press on the splitter, for its double click.
     pub split_click: Option<std::time::Instant>,
+    /// Snap and view preferences (per user, `pianoview.txt`; spec §2, §3).
+    pub view: crate::piano_snap::View,
+    /// Scale highlighting of the rows and keys, and the chord the Draw tool stamps (§2 helpers).
+    pub scale: Option<crate::piano_scale::KeyScale>,
+    pub stamp: Option<crate::piano_scale::Chord>,
+    /// What a new note gets besides its place: velocity, pan, release, cutoff, resonance, fine pitch, the colour
+    /// (MIDI channel) in `group` and the slide flag (§6, the Note properties dialog's "new notes").
+    pub template: Note,
+    /// The Note properties dialog, when open.
+    pub props: Option<crate::note_props::Props>,
+    /// Last left press on a note / a ghost note / a time marker, for their double clicks (note index or channel,
+    /// time; for a ghost also the note count before the press, to take back the note that press drew).
+    pub note_click: Option<(usize, std::time::Instant)>,
+    pub ghost_click: Option<(u16, std::time::Instant, usize)>,
+    pub marker_click: Option<(usize, std::time::Instant)>,
     sel: Vec<usize>,
     sel_key: (u16, u16),
     undo: Vec<(u16, Vec<Note>, Vec<ControlPoint>)>,
@@ -128,6 +146,14 @@ impl Default for PianoState {
             rng: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1,
             split: crate::piano_split::load(),
             split_click: None,
+            view: crate::piano_snap::load(),
+            scale: None,
+            stamp: None,
+            template: Note::step(0, 0),
+            props: None,
+            note_click: None,
+            ghost_click: None,
+            marker_click: None,
             sel: Vec::new(),
             sel_key: (0, 0),
             undo: Vec::new(),
@@ -157,11 +183,24 @@ impl PianoState {
 
     /// Forget everything tied to the previous project.
     pub fn reset(&mut self) {
-        *self = PianoState { px_per_beat: self.px_per_beat, row_h: self.row_h, ghosts: self.ghosts, tool: self.tool, rng: self.rng, split: self.split, ..PianoState::default() };
+        *self = PianoState {
+            px_per_beat: self.px_per_beat,
+            row_h: self.row_h,
+            ghosts: self.ghosts,
+            tool: self.tool,
+            rng: self.rng,
+            split: self.split,
+            view: self.view,
+            scale: self.scale,
+            stamp: self.stamp,
+            template: self.template,
+            ..PianoState::default()
+        };
     }
 }
 
 /// Mapping between grid pixels and ticks / keys for one frame.
+#[derive(Clone, Copy)]
 pub struct Geom {
     pub grid: Rect,
     pub ppt: f32,
@@ -169,7 +208,10 @@ pub struct Geom {
     pub scroll_y: f32,
     /// Key row pitch in pixels (§3a).
     pub row: f32,
+    /// The snap unit in ticks (the snap menu's choice, §2; 1 = no snapping).
     pub step: u32,
+    /// The grid's step lines (a 1/16 note).
+    pub cell: u32,
     pub beat: u32,
     pub bar: u32,
 }
@@ -183,10 +225,16 @@ impl Geom {
             scroll_x: s.piano.scroll_x,
             scroll_y: s.piano.scroll_y,
             row: s.piano.row_h,
-            step: ppq / 4,
+            step: s.piano.view.snap.ticks(ppq, s.piano.px_per_beat),
+            cell: ppq / 4,
             beat: ppq,
             bar: ppq * 4,
         }
+    }
+
+    /// The same mapping without snapping (Alt held while clicking or dragging, §8).
+    pub fn unsnapped(self) -> Geom {
+        Geom { step: 1, ..self }
     }
 
     pub fn x_of(&self, tick: f32) -> f32 {
@@ -219,7 +267,7 @@ impl Geom {
         if key > TOP_KEY {
             return None;
         }
-        let len = if n.length == 0 { self.step } else { n.length };
+        let len = if n.length == 0 { self.cell } else { n.length };
         let x = self.x_of(n.position as f32);
         let w = (len as f32 * self.ppt).max(3.0);
         Some(Rect::new(x, self.y_of(key) - 1.0, w, self.row + 1.0))
@@ -364,6 +412,10 @@ impl Lane {
             _ => {}
         }
     }
+    /// A new note's value (the step defaults, patterns.md): what a right-click in the lane puts back (§7a).
+    pub fn default_value(self) -> u8 {
+        self.get(&Note::step(0, 0))
+    }
     /// Value at the top of the panel.
     fn scale(self) -> f32 {
         match self {
@@ -418,6 +470,54 @@ impl Lane {
             _ => panel.y + panel.h / 2.0,
         }
     }
+}
+
+/// A note's colour, which is also its MIDI channel (0..=15, §6): the low nibble of `group`.
+pub fn color_of(n: &Note) -> u8 {
+    n.group & 0x0f
+}
+
+pub fn set_color(n: &mut Note, c: u8) {
+    n.group = (n.group & !0x0f) | (c & 0x0f);
+}
+
+pub fn set_slide(n: &mut Note, on: bool) {
+    if on {
+        n.flags |= Note::SLIDE;
+    } else {
+        n.flags &= !Note::SLIDE;
+    }
+}
+
+/// Smooth the event panel's note property over the selection (or every note of the channel), in time order: each value
+/// becomes a 1-2-1 average of itself and its neighbours (Lemon Studio choice). Returns false when nothing changes.
+pub fn smooth_lane(s: &mut State) -> bool {
+    let lane = s.piano.lane;
+    if lane.is_channel() {
+        return false;
+    }
+    let all = notes(s);
+    let mut idx = targets(s);
+    idx.retain(|&i| i < all.len());
+    idx.sort_by_key(|&i| (all[i].position, all[i].key));
+    if idx.len() < 3 {
+        return false;
+    }
+    let vals: Vec<f32> = idx.iter().map(|&i| f32::from(lane.get(&all[i]))).collect();
+    let last = vals.len() - 1;
+    let new: Vec<u8> = (0..vals.len())
+        .map(|j| ((vals[j.saturating_sub(1)] + 2.0 * vals[j] + vals[(j + 1).min(last)]) / 4.0).round().clamp(0.0, lane.max()) as u8)
+        .collect();
+    if new.iter().zip(&vals).all(|(&a, &b)| f32::from(a) == b) {
+        return false;
+    }
+    snapshot(s);
+    let p = pattern_mut(s);
+    for (k, &i) in idx.iter().enumerate() {
+        lane.set(&mut p.notes[i], new[k]);
+    }
+    s.piano.dirty = true;
+    true
 }
 
 /// Top of a velocity lollipop: `velocity / 128` of the panel height (§7).
@@ -506,11 +606,12 @@ pub fn undo(s: &mut State) -> bool {
     true
 }
 
-/// Add a note with the defaults of a step (patterns.md) at `tick`/`key`; returns its index.
+/// Add a note with the new-note properties (the defaults of a step, patterns.md, unless the Note properties dialog
+/// changed them) at `tick`/`key`; returns its index.
 pub fn add_note(s: &mut State, channel: u16, tick: u32, key: i32) -> usize {
     let ppq = u32::from(s.project.ppq.max(4));
     let length = if s.piano.last_len > 0 { s.piano.last_len } else { ppq / 2 };
-    let note = Note { length, key: key.clamp(0, TOP_KEY) as u16, ..Note::step(channel, tick) };
+    let note = Note { position: tick, length, channel, key: key.clamp(0, TOP_KEY) as u16, ..s.piano.template };
     let p = pattern_mut(s);
     p.notes.push(note);
     p.notes.len() - 1

@@ -294,6 +294,8 @@ pub enum Cmd {
     Misc(usize, crate::misc_page::M, f32),
     /// Piano roll Tools menu (spec: ui/piano-roll.md §11).
     Piano(crate::piano_tools::NCmd),
+    /// The piano roll's other menus (snap, helpers, options, channel, colours, markers; `piano_menu`).
+    PianoRoll(crate::piano_menu::PrCmd),
     /// Settings > Audio menus: device, sample rate, buffer length (spec: ui/settings.md "Audio").
     Audio(crate::audio_cfg::Set),
     /// The toolbar CPU panel's menu (spec: ui/main-window.md §13).
@@ -375,6 +377,8 @@ pub enum EditTarget {
     SlotName(u16, u8),
     /// The current arrangement's name (§12).
     ArrangementName,
+    /// A piano-roll time marker of the current pattern (spec: ui/piano-roll.md §10a).
+    PianoMarker(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2819,6 +2823,7 @@ pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
         EditTarget::PatternName(n) => source_name(s, ClipSource::Pattern(n)),
         EditTarget::MixerName(n) => crate::mixer::name(s, n),
         EditTarget::SlotName(t, k) => crate::mixer::slot_name(s, t, k).unwrap_or_default(),
+        EditTarget::PianoMarker(i) => crate::piano_menu::marker_name(s, i),
     };
     s.playlist.edit = Some(TextEdit { target, text, at });
 }
@@ -2868,6 +2873,7 @@ pub fn commit_edit(s: &mut State) {
                 s.mixer.slot_names.insert((t, k), text);
             }
         }
+        EditTarget::PianoMarker(i) => crate::piano_menu::rename_marker(s, i, text),
         EditTarget::PatternName(n) => {
             if let Some(p) = s.project.patterns.iter_mut().find(|p| p.number == n) {
                 p.name = (!text.is_empty()).then_some(text);
@@ -2899,6 +2905,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             app.invalidate();
             return m;
         }
+        Cmd::PianoRoll(c) => return crate::piano_menu::run(app, c),
         Cmd::Misc(row, m, v) => {
             crate::misc::set(app, row, m, v);
             return None;
@@ -2953,7 +2960,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
     let grid_w = grid.map_or(1400.0, |g| g.w);
     let grid_wh = grid.map_or((1400.0, 800.0), |g| (g.w, g.h));
     let msg = match cmd {
-        Cmd::Nothing | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::ContinuousScrolling => None,
+        Cmd::Nothing | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::Piano(_) | Cmd::PianoRoll(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::ContinuousScrolling => None,
         #[cfg(plugin_windows)]
         Cmd::Window(_) => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),

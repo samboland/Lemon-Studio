@@ -1,26 +1,59 @@
 //! Mouse input in the piano roll: what a press on the grid, a note, the event panel or the keyboard does with the
 //! tool in use, the drags that follow (move, resize, erase, mute, paint, marquee, slice, zoom box, scrub, velocity and
-//! control points, the keyboard) and the helpers they share. `App::mouse_down` / `mouse_move` / `mouse_up` route the
-//! piano roll's actions and drags here.
-// spec: ui/piano-roll.md §8 (Draw tool), §9 (other tools), §11
+//! control points, the keyboard, the event panel's reset and straight lines, time markers) and the helpers they share.
+//! `App::mouse_down` / `mouse_move` / `mouse_up` route the piano roll's actions and drags here. Alt held while clicking
+//! or dragging bypasses the snap.
+// spec: ui/piano-roll.md §7a (event panel), §8 (Draw tool), §9 (other tools), §10a (time markers), §11
 
-use os_model::Note;
+use std::time::Instant;
+
+use os_model::{ControlPoint, Note};
 use os_ui::Rect;
 
 use crate::app::{resize_zone, Action, App, Drag, State};
-use crate::piano::{self, Overlay, PianoState, Tool};
+use crate::piano::{self, Geom, Overlay, PianoState, Tool};
 use crate::views;
+
+/// A double click: a second press within this many milliseconds (Lemon Studio choice, as the other double clicks).
+const DOUBLE_MS: u128 = 400;
+
+/// The piano roll's drags that live in this module (`Drag::Piano`).
+#[derive(Debug, Clone)]
+pub enum PDrag {
+    /// A time marker's tab moved along the ruler (§10a).
+    Marker { i: usize },
+    /// Right-drag over a note lane: the notes passed get the lane's default value (§7a).
+    LaneReset { last_x: f32 },
+    /// Alt+drag in the event panel: a straight line from the press (x0, y0); `notes` / `controls` are the pattern's
+    /// before the drag, put back before each new line (§7a).
+    LaneLine { x0: f32, y0: f32, notes: Vec<Note>, controls: Vec<ControlPoint> },
+    /// Paint and add: a note `len` long in every slot the mouse enters, on the row under it.
+    PaintAdd { len: u32 },
+}
 
 impl App {
     /// Left click in the piano roll (spec: ui/piano-roll.md §8 Draw tool, §9 other tools).
     pub(crate) fn piano_click(&mut self, a: &Action) {
         let (x, y) = self.mouse;
-        let Some(g) = self.piano_geom() else { return };
+        let Some(g) = self.piano_snap_geom() else { return };
         let Some(ch) = piano::channel(&self.state) else {
             self.state.message = Some("Piano roll: no channel selected".into());
             return;
         };
         let tool = self.state.piano.tool;
+        if matches!(a, Action::PianoGrid | Action::PianoNote(_)) && self.ghost_double_click(&g, x, y) {
+            return;
+        }
+        if matches!(a, Action::PianoGrid | Action::PianoNote(_)) && tool == Tool::PaintAdd {
+            let s = &mut self.state;
+            piano::snapshot(s);
+            s.piano.clear_selection();
+            let ppq = u32::from(s.project.ppq.max(4));
+            let len = if s.piano.last_len > 0 { s.piano.last_len } else { ppq / 2 };
+            self.drag = Some(Drag::Piano(PDrag::PaintAdd { len }));
+            self.paint_add(len);
+            return;
+        }
         if matches!(a, Action::PianoGrid | Action::PianoNote(_)) && tool != Tool::Draw {
             let s = &mut self.state;
             let note = if let Action::PianoNote(i) = *a { Some(i) } else { None };
@@ -98,14 +131,28 @@ impl App {
             Action::PianoGrid => {
                 piano::snapshot(s);
                 s.piano.clear_selection();
-                let i = piano::add_note(s, ch, g.snap_down(g.tick_at(x)), g.key_at(y));
-                let n = piano::notes(s)[i];
+                // The chord stamp (§2 helpers) places the whole chord on the clicked key; it moves as one.
+                let key = g.key_at(y).clamp(0, views::piano::TOP_KEY);
+                let keys = s.piano.stamp.map_or(vec![key], |c| c.keys(key, views::piano::TOP_KEY));
+                let tick = g.snap_down(g.tick_at(x));
+                let added: Vec<usize> = keys.iter().map(|&k| piano::add_note(s, ch, tick, k)).collect();
+                let notes = piano::notes(s);
+                let orig: Vec<(usize, Note)> = added.iter().map(|&i| (i, notes[i])).collect();
+                let n = orig[0].1;
                 s.piano.last_len = n.length;
-                self.drag = Some(Drag::NoteMove { x0: x, y0: y, orig: vec![(i, n)] });
+                self.drag = Some(Drag::NoteMove { x0: x, y0: y, orig });
                 self.hold_key(Some(i32::from(n.key)), true);
             }
             Action::PianoNote(i) => {
                 let Some(&n) = piano::notes(s).get(i) else { return };
+                // A double click opens the note's properties (§12).
+                let now = Instant::now();
+                if s.piano.note_click.is_some_and(|(j, t)| j == i && now.duration_since(t).as_millis() < DOUBLE_MS) {
+                    s.piano.note_click = None;
+                    crate::note_props::open(s, crate::note_props::Target::Note(i));
+                    return;
+                }
+                s.piano.note_click = Some((i, now));
                 piano::snapshot(s);
                 let sel = s.piano.selection(s.pattern, Some(ch));
                 let idx = if sel.contains(&i) && tool.moves_groups() {
@@ -127,6 +174,13 @@ impl App {
                     self.hold_key(Some(i32::from(n.key)), true);
                     Drag::NoteMove { x0: x, y0: y, orig }
                 });
+            }
+            Action::PianoVelocity if self.alt => {
+                // Alt+drag: a straight line from here (§7a).
+                piano::snapshot(s);
+                let (notes, controls) = (piano::notes(s).to_vec(), piano::controls(s).to_vec());
+                self.drag = Some(Drag::Piano(PDrag::LaneLine { x0: x, y0: y, notes, controls }));
+                self.lane_line(x, y, x, y);
             }
             Action::PianoVelocity => {
                 piano::snapshot(s);
@@ -170,7 +224,7 @@ impl App {
                 self.damage_piano();
             }
             Drag::Slice => {
-                if let Some(g) = self.piano_geom() {
+                if let Some(g) = self.piano_snap_geom() {
                     let t = g.snap_down(g.tick_at(x) + g.step as f32 / 2.0);
                     self.state.piano.overlay = Some(Overlay::Slice(t));
                 }
@@ -181,13 +235,13 @@ impl App {
                 self.damage_piano();
             }
             Drag::Marker => {
-                if let Some(g) = self.piano_geom() {
+                if let Some(g) = self.piano_snap_geom() {
                     self.state.piano.marker = g.snap_down(g.tick_at(x) + g.step as f32 / 2.0);
                 }
                 self.damage_piano();
             }
             Drag::TimeSel { t0 } => {
-                if let Some(g) = self.piano_geom() {
+                if let Some(g) = self.piano_snap_geom() {
                     let t = g.snap_down(g.tick_at(x) + g.step as f32 / 2.0);
                     piano::select_range(&mut self.state, t0.min(t), t0.max(t));
                 }
@@ -220,13 +274,179 @@ impl App {
                     }
                 }
             }
+            Drag::Piano(p) => self.piano_pdrag_move(p, x, y),
             _ => {}
+        }
+    }
+
+    /// The piano roll's geometry with the snap Alt leaves out (§8).
+    pub(crate) fn piano_snap_geom(&self) -> Option<Geom> {
+        self.piano_geom().map(|g| if self.alt { g.unsnapped() } else { g })
+    }
+
+    fn piano_pdrag_move(&mut self, p: PDrag, x: f32, y: f32) {
+        match p {
+            PDrag::Marker { i } => {
+                if let Some(g) = self.piano_snap_geom() {
+                    let t = g.snap_down(g.tick_at(x) + g.step as f32 / 2.0);
+                    crate::piano_menu::move_marker(&mut self.state, i, t);
+                }
+                // A press that moved the marker is not the first half of a double click.
+                self.state.piano.marker_click = None;
+                self.damage_piano();
+            }
+            PDrag::LaneReset { last_x } => {
+                self.lane_reset(last_x, x);
+                self.drag = Some(Drag::Piano(PDrag::LaneReset { last_x: x }));
+            }
+            PDrag::LaneLine { x0, y0, notes, controls } => {
+                let p = piano::pattern_mut(&mut self.state);
+                p.notes.clone_from(&notes);
+                p.controls.clone_from(&controls);
+                self.lane_line(x0, y0, x, y);
+            }
+            PDrag::PaintAdd { len } => self.paint_add(len),
+        }
+    }
+
+    /// The button went up on one of these drags (`App::mouse_up`).
+    pub(crate) fn piano_pdrag_up(&mut self, p: PDrag) {
+        match p {
+            PDrag::Marker { .. } => crate::piano_menu::sort_markers(&mut self.state),
+            PDrag::LaneReset { .. } | PDrag::LaneLine { .. } | PDrag::PaintAdd { .. } => piano::finish_edit(&mut self.state),
+        }
+        self.state.piano.dirty = true;
+        self.damage_piano();
+    }
+
+    /// A right press on the event panel's note lane: the notes under the mouse (and those the drag passes) get the
+    /// lane's default back (§7a).
+    pub(crate) fn piano_lane_right(&mut self) {
+        let x = self.mouse.0;
+        piano::snapshot(&mut self.state);
+        self.drag = Some(Drag::Piano(PDrag::LaneReset { last_x: x }));
+        self.lane_reset(x, x);
+    }
+
+    /// This channel's notes starting between two x positions (±3 px, the lollipop's width), as (index, x).
+    fn lane_notes(&self, g: &Geom, a: f32, b: f32) -> Vec<(usize, f32)> {
+        let ch = piano::channel(&self.state);
+        let (a, b) = (a.min(b) - 3.0, a.max(b) + 3.0);
+        piano::notes(&self.state)
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| Some(n.channel) == ch)
+            .map(|(i, n)| (i, g.x_of(n.position as f32)))
+            .filter(|&(_, nx)| nx >= a && nx <= b)
+            .collect()
+    }
+
+    fn lane_reset(&mut self, last_x: f32, x: f32) {
+        let Some(g) = self.piano_geom() else { return };
+        let lane = self.state.piano.lane;
+        let hit = self.lane_notes(&g, last_x, x);
+        let p = piano::pattern_mut(&mut self.state);
+        for &(i, _) in &hit {
+            lane.set(&mut p.notes[i], lane.default_value());
+        }
+        if !hit.is_empty() {
+            self.state.piano.dirty = true;
+            self.damage_piano();
+        }
+    }
+
+    /// Alt+drag in the event panel (§7a): the lane's values along the straight line from (x0, y0) to (x1, y1), for the
+    /// notes starting between them, or a control point every snap step in a channel lane.
+    fn lane_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        let (Some(g), Some(panel)) = (self.piano_geom(), self.piano_panel) else { return };
+        let lane = self.state.piano.lane;
+        let y_at = |px: f32| if (x1 - x0).abs() < 0.5 { y1 } else { y0 + (y1 - y0) * ((px - x0) / (x1 - x0)).clamp(0.0, 1.0) };
+        if lane.is_channel() {
+            let (Some(ch), Some(param)) = (piano::channel(&self.state), lane.param()) else { return };
+            let center = self.state.piano.pitch_center;
+            let t0 = g.snap_down(g.tick_at(x0.min(x1)).max(0.0));
+            let t1 = g.snap_down(g.tick_at(x0.max(x1)).max(0.0));
+            piano::erase_controls(&mut self.state, ch, param, t0, t1);
+            let mut t = t0;
+            while t <= t1 {
+                let v = lane.control_at(panel, y_at(g.x_of(t as f32)), center);
+                piano::set_control(&mut self.state, ch, param, t, v);
+                t += g.step.max(1);
+            }
+        } else {
+            let hit = self.lane_notes(&g, x0, x1);
+            let p = piano::pattern_mut(&mut self.state);
+            for (i, nx) in hit {
+                lane.set(&mut p.notes[i], lane.value_at(panel, y_at(nx)));
+            }
+        }
+        self.state.piano.dirty = true;
+        self.damage_rect(panel.outset(1.0));
+    }
+
+    /// Paint and add: a note `len` long in the slot under the mouse on the row under it, unless this channel already
+    /// has a note on that row overlapping the slot.
+    pub(crate) fn paint_add(&mut self, len: u32) {
+        let (Some(g), Some(ch)) = (self.piano_snap_geom(), piano::channel(&self.state)) else { return };
+        let (x, y) = self.mouse;
+        if !g.grid.contains(x, y) {
+            return;
+        }
+        let len = len.max(1);
+        let tick = g.tick_at(x).max(0.0) as u32;
+        let pos = if self.alt { tick } else { tick - tick % len };
+        let key = g.key_at(y).clamp(0, views::piano::TOP_KEY);
+        let taken = piano::notes(&self.state).iter().any(|n| n.channel == ch && i32::from(n.key) == key && n.position < pos + len && pos < n.position + n.length.max(1));
+        if taken {
+            return;
+        }
+        let i = piano::add_note(&mut self.state, ch, pos, key);
+        piano::pattern_mut(&mut self.state).notes[i].length = len;
+        self.state.piano.dirty = true;
+        let r = g.note_rect(&piano::notes(&self.state)[i]);
+        self.hold_key(Some(key), true);
+        match r {
+            Some(r) => self.damage_notes(&[r]),
+            None => self.damage_piano(),
+        }
+    }
+
+    /// A press on a ghost note (another channel's note, shown dimmed, §5): the second press of a double click makes
+    /// its channel the piano roll's, taking back the note the first press drew there. Returns true when it switched.
+    fn ghost_double_click(&mut self, g: &Geom, x: f32, y: f32) -> bool {
+        let s = &self.state;
+        let ch = piano::channel(s);
+        let ghost = if s.piano.ghosts { piano::notes(s).iter().rev().find(|n| Some(n.channel) != ch && g.note_rect(n).is_some_and(|r| r.contains(x, y))) } else { None };
+        let Some(gch) = ghost.map(|n| n.channel) else {
+            self.state.piano.ghost_click = None;
+            return false;
+        };
+        let now = Instant::now();
+        let count = piano::notes(s).len();
+        match s.piano.ghost_click {
+            Some((c, t, before)) if c == gch && now.duration_since(t).as_millis() < DOUBLE_MS => {
+                self.state.piano.ghost_click = None;
+                if count > before {
+                    piano::undo(&mut self.state);
+                }
+                let Some(row) = self.state.project.channels.iter().position(|c| c.index == gch) else { return false };
+                self.focus_channel(row);
+                self.state.rack.select_only(row);
+                let name = self.state.project.channels[row].name.clone().unwrap_or_else(|| format!("Channel {}", row + 1));
+                self.state.message = Some(format!("Piano roll: {name}"));
+                self.invalidate();
+                true
+            }
+            _ => {
+                self.state.piano.ghost_click = Some((gch, now, count));
+                false
+            }
         }
     }
 
     /// Move (`resize == false`) or resize the dragged notes from their originals, snapped to steps.
     pub(crate) fn drag_notes(&mut self, x0: f32, y0: f32, orig: &[(usize, Note)], resize: bool) {
-        let Some(g) = self.piano_geom() else { return };
+        let Some(g) = self.piano_snap_geom() else { return };
         let (x, y) = self.mouse;
         let mut dt = g.snap_delta((x - x0) / g.ppt);
         let mut held = None;
