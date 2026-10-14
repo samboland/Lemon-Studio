@@ -73,7 +73,8 @@ pub fn clear() {
     with(|l| l.entries.clear());
 }
 
-/// The UI tick's watcher (one call in `App::tick`): a new hint-bar message goes into the log.
+/// The UI tick's watcher (one call in `App::tick`): a new hint-bar message goes into the log, and a project that was
+/// opened or saved under a new name goes to the top of the project picker's recent projects.
 pub fn watch(app: &mut App) {
     if let Some(m) = &app.state.message {
         let key = (m.as_ptr() as usize, m.clone());
@@ -86,6 +87,7 @@ pub fn watch(app: &mut App) {
             push(m.clone());
         }
     }
+    crate::project_picker::watch(&app.state);
 }
 
 #[cfg(test)]

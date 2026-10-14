@@ -302,6 +302,8 @@ pub enum Cmd {
     MetronomeSound(os_engine::metronome::Sound),
     /// The auto-scrolling button's menu (spec: ui/auto-scrolling.md §2).
     ContinuousScrolling,
+    /// VIEW's submenus and the project picker (`menu_view`).
+    View(crate::menu_view::VCmd),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2908,6 +2910,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             return None;
         }
         Cmd::Cpu(c) => return app.cpu_cmd(c),
+        Cmd::View(c) => return crate::menu_view::run(app, c),
         Cmd::MetronomeSound(sound) => {
             crate::metronome::set_sound(sound);
             app.invalidate();
@@ -2953,7 +2956,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
     let grid_w = grid.map_or(1400.0, |g| g.w);
     let grid_wh = grid.map_or((1400.0, 800.0), |g| (g.w, g.h));
     let msg = match cmd {
-        Cmd::Nothing | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::ContinuousScrolling => None,
+        Cmd::Nothing | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::ContinuousScrolling | Cmd::View(_) => None,
         #[cfg(plugin_windows)]
         Cmd::Window(_) => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),

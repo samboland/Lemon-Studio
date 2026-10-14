@@ -56,6 +56,7 @@ mod plugin_window;
 mod plugins;
 mod project_plugins;
 mod presets;
+mod project_picker;
 mod misc;
 mod misc_page;
 mod song_pos;
