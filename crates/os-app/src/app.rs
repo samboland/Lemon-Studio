@@ -1507,6 +1507,7 @@ impl App {
         self.loading_tick();
         self.export_tick();
         self.midi_tick();
+        crate::midi_out::follow(&self.transport, &self.state);
         self.mixer_tick();
         self.sync_effects();
         self.params_tick();
@@ -4043,6 +4044,8 @@ impl App {
                         self.transport.note_off(row, u16::from(key));
                     }
                 }
+                // Controllers, pitch bend, clock and the special channels' notes: nothing follows them yet.
+                _ => {}
             }
         }
         self.typing_lit_changed();
