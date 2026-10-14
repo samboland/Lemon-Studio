@@ -1147,6 +1147,141 @@ pub fn stretch_param(name: &str, norm: f64, stretch: &mut [u32; 4]) -> bool {
     true
 }
 
+/// The envelope targets' parameter name prefixes, in `Channel::envelopes` order (Lemon Sampler's envelope tab).
+const ENV_TARGETS: [&str; 5] = ["Panning", "Volume", "Mod X", "Mod Y", "Pitch"];
+
+/// Sets `slot` to `v`; true when that changed it.
+fn put<T: PartialEq>(slot: &mut T, v: T) -> bool {
+    if *slot == v {
+        return false;
+    }
+    *slot = v;
+    true
+}
+
+/// A knob value `plain` for a model field whose knob position is `now` (what `sampler_state` sends for it): unchanged
+/// while the knob stands there (a stored value the knob only approximates stays exact), else `stored(plain)`.
+fn knob_put<T: PartialEq>(slot: &mut T, now: impl FnOnce(&T) -> f32, plain: f32, stored: impl FnOnce(f32) -> T) -> bool {
+    if (plain - now(slot)).abs() < 1e-5 {
+        return false;
+    }
+    put(slot, stored(plain))
+}
+
+/// Writes an edit of one of Lemon Sampler's parameters (`name`, at normalized value `norm`) into its channel: the
+/// reverse of `sampler_state` (envelopes, stretch, sample start / length, precomputed effects, loop options, filter,
+/// declick, use of the loop points), and of `misc::sampler_param` (root note, fine tuning, main pitch, add to key). A
+/// value the model already gives the knob leaves the model as it is, so the file's own value is saved. The envelope
+/// tempo switches and LFO knobs, which `sampler_state` does not send, are taken too. True when the channel changed;
+/// false for other parameters (spec: plugins/lemon-sampler.md §6, §7, audio/channel-envelopes.md,
+/// audio/precomputed-effects.md "Settings").
+pub fn sampler_param(name: &str, norm: f64, ch: &mut os_model::Channel) -> bool {
+    use lemon_sampler::params::{self as sp, unit, Unit};
+    use os_model::SampleFx;
+    let mut st = ch.sound.stretch;
+    if stretch_param(name, norm, &mut st) {
+        return put(&mut ch.sound.stretch, st);
+    }
+    let n = norm.clamp(0.0, 1.0) as f32;
+    let (bi, on) = (n * 2.0 - 1.0, n >= 0.5);
+    let pick = |count: usize| (n * (count - 1) as f32).round() as i32;
+    let time = |field: i32| field.max(0) as f32 / 65536.0;
+    let unit128 = |v: i32, lo: i32| v.clamp(lo, 128) as f32 / 128.0;
+    // Envelope records: "<target> <knob>".
+    let env = ENV_TARGETS.iter().enumerate().find_map(|(k, t)| Some((k, name.strip_prefix(t)?.strip_prefix(' ')?)));
+    if let Some((k, field)) = env {
+        let e = &mut ch.envelopes[k];
+        let bit = |e: &mut os_model::Envelope, b: i32| {
+            let v = if on { e.flags | b } else { e.flags & !b };
+            put(&mut e.flags, v)
+        };
+        let changed = match field {
+            "envelope" => put(&mut e.enabled, on),
+            "delay" => knob_put(&mut e.delay, |&v| time(v), n, sp::time_field),
+            "attack" => knob_put(&mut e.attack, |&v| time(v), n, sp::time_field),
+            "hold" => knob_put(&mut e.hold, |&v| time(v), n, sp::time_field),
+            "decay" => knob_put(&mut e.decay, |&v| time(v), n, sp::time_field),
+            "release" => knob_put(&mut e.release, |&v| time(v), n, sp::time_field),
+            "sustain" => knob_put(&mut e.sustain, |&v| unit128(v, 0), n, |v| (v * 128.0).round() as i32),
+            "attack tension" => knob_put(&mut e.attack_tension, |&v| unit128(v, -128), bi, |v| (v * 128.0).round() as i32),
+            "decay tension" => knob_put(&mut e.decay_tension, |&v| unit128(v, -128), bi, |v| (v * 128.0).round() as i32),
+            "release tension" => knob_put(&mut e.release_tension, |&v| unit128(v, -128), bi, |v| (v * 128.0).round() as i32),
+            "amount" => knob_put(&mut e.amount, |&v| unit128(v, -128), bi, |v| (v * 128.0).round() as i32),
+            // Flags: 1 = envelope times follow the tempo, 2 = LFO times do (audio/envelopes-and-lfos.md).
+            "tempo" => bit(e, 1),
+            "LFO tempo" => bit(e, 2),
+            "LFO shape" => put(&mut e.lfo_shape, pick(sp::LFO_SHAPES.len())),
+            "LFO delay" => knob_put(&mut e.lfo_delay, |&v| time(v), n, sp::time_field),
+            "LFO attack" => knob_put(&mut e.lfo_attack, |&v| time(v), n, sp::time_field),
+            "LFO speed" => knob_put(&mut e.lfo_speed, |&v| time(v), n, sp::time_field),
+            "LFO amount" => knob_put(&mut e.lfo_amount, |&v| unit128(v, -128), bi, |v| (v * 128.0).round() as i32),
+            _ => false,
+        };
+        return changed;
+    }
+    let s = &mut ch.sound;
+    let fx = &mut s.fx;
+    // A precomputed setting's knob: bipolar knobs (lo -1) run -1..1.
+    let word = |slot: &mut u16, u: &Unit| {
+        let plain = if u.lo < 0.0 { bi } else { n };
+        knob_put(slot, |&v| u.knob(v.into()), plain, |v| u.stored(v).min(65535) as u16)
+    };
+    let flag = |fx: &mut SampleFx, b: u16| {
+        let v = if on { fx.flags | b } else { fx.flags & !b };
+        put(&mut fx.flags, v)
+    };
+    let range = |bits: &mut u64| knob_put(bits, |&b| f64::from_bits(b).clamp(0.0, 1.0) as f32, n, |v| f64::from(v).to_bits());
+    match name {
+        "Sample start" => range(&mut fx.start_bits),
+        "Sample end" => range(&mut fx.length_bits),
+        "Quick fade in" => word(&mut fx.fade_in, &unit::FADE),
+        "Quick fade out" => word(&mut fx.fade_out, &unit::FADE),
+        "Crossfade loop" => knob_put(&mut fx.crossfade, |&v| unit::CROSSFADE.knob(v), n, |v| unit::CROSSFADE.stored(v)),
+        "Silence trimming threshold" => knob_put(&mut fx.trim, |&v| unit::TRIM.knob(v), n, |v| unit::TRIM.stored(v)),
+        "Boost" => word(&mut fx.boost, &unit::BOOST),
+        "EQ" => word(&mut fx.feedback, &unit::FEEDBACK),
+        "Ring modulation mix" => word(&mut fx.ring_mix, &unit::RING_MIX),
+        "Ring modulation frequency" => word(&mut fx.ring_freq, &unit::RING_FREQ),
+        "Filter cutoff" => word(&mut fx.cutoff, &unit::CUTOFF),
+        "Filter resonance" => word(&mut fx.resonance, &unit::RESONANCE),
+        "Reverb amount" => word(&mut fx.reverb, &unit::REVERB),
+        "Stereo delay" => word(&mut fx.stereo_delay, &unit::STEREO_DELAY),
+        "Pogo effect" => word(&mut fx.pogo, &unit::POGO),
+        "Reverb type" => {
+            let v = pick(sp::REVERB_TYPES.len()) as u16;
+            fx.reverb_type.min(1) != v && put(&mut fx.reverb_type, v)
+        }
+        "Remove DC offset" => put(&mut fx.remove_dc, on),
+        "Normalize" => put(&mut fx.normalize, on),
+        "Reverse polarity" => put(&mut fx.polarity, on),
+        "Ping pong loop" => put(&mut fx.ping_pong, on),
+        "Loop points follow a reversal" => put(&mut fx.loop_follows_reverse, on),
+        "Reverse" => flag(fx, SampleFx::REVERSE),
+        "Fade stereo" => flag(fx, SampleFx::FADE_STEREO),
+        "Swap stereo" => flag(fx, SampleFx::SWAP),
+        "Clipping" => flag(fx, SampleFx::CLIP),
+        // The channel filter: knob positions = stored / 256 (audio/channel-filter.md).
+        "Filter frequency (modulation X)" => knob_put(&mut s.cutoff, |&v| v.clamp(0, 256) as f32 / 256.0, n, |v| (v * 256.0).round() as i32),
+        "Filter bandwidth (modulation Y)" => knob_put(&mut s.resonance, |&v| v.clamp(0, 256) as f32 / 256.0, n, |v| (v * 256.0).round() as i32),
+        "Filter type" => put(&mut s.filter_type, pick(sp::FILTERS.len())),
+        // Mode 6 (stored only) shows as mode 0: picking mode 0 again keeps it.
+        "Declicking mode" => {
+            let v = pick(sp::DECLICK.len()) as u8;
+            (if s.declick <= 5 { s.declick } else { 0 }) != v && put(&mut s.declick, v)
+        }
+        // Sampler flags value 8 (event 143); a file without the event keeps none while the loop points stay in use.
+        "Use loop points" => match s.sampler_flags {
+            Some(f) => put(&mut s.sampler_flags, Some(if on { f | 8 } else { f & !8 })),
+            None => !on && put(&mut s.sampler_flags, Some(0)),
+        },
+        "Root note" => put(&mut ch.misc.root, pick(usize::try_from(sp::KEY_MAX).unwrap_or(131) + 1) as u8),
+        "Fine tuning" => put(&mut ch.misc.fine, (n * 200.0 - 100.0).round() as i32),
+        "Affected by the main pitch" => put(&mut ch.misc.main_pitch, on),
+        "Add root note to key" => put(&mut ch.misc.add_key, on),
+        _ => false,
+    }
+}
+
 /// `blob` (a Lemon Sampler state) with parameters set to the given JSON values.
 fn with_params(blob: &[u8], set: &[(&str, serde_json::Value)]) -> Option<Vec<u8>> {
     let prefixed = blob.len() > 8 && blob[0] != b'{';
