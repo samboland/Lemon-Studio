@@ -21,8 +21,16 @@ mod loading;
 mod logo;
 #[cfg(target_os = "macos")]
 mod macos;
+mod menu_add;
 #[cfg(target_os = "macos")]
 mod menu_bar;
+mod menu_edit;
+mod menu_file;
+mod menu_help;
+mod menu_options;
+mod menu_registry;
+mod menu_tools;
+mod menu_view;
 mod meters;
 mod metronome;
 mod midi_in;
@@ -31,6 +39,7 @@ mod osc3;
 mod monitor;
 mod params;
 mod piano;
+mod piano_mouse;
 mod piano_split;
 mod piano_tools;
 mod rack;

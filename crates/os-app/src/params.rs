@@ -228,6 +228,11 @@ pub fn menu_handles(label: &str) -> bool {
     matches!(label, ADD_LAST | TOOLS_LAST | TOOLS_NEXT)
 }
 
+/// Run one of `menu_handles`' entries (`menu_registry` area).
+pub fn menu_run(app: &mut App, label: &str) -> Option<String> {
+    app.params_menu(label)
+}
+
 impl App {
     /// Every plugin tick: keeps the parameter lists of hosted instances and records the parameters their editors moved.
     pub(crate) fn params_tick(&mut self) {

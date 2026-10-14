@@ -1,8 +1,21 @@
 //! Settings window (OPTIONS > MIDI / Audio / General / File / Theme settings, Project settings, Project info,
-//! Debugging log; F10 / F11): ten tabs of grouped controls. The controls that work today are listed in `LIVE` and
-//! handled in `App::settings_act`; every other control is drawn greyed out and only says it is not available yet.
-//! The Plugins tab is the plugin manager (search folders, scanning, the plugin table).
+//! Debugging log; F10 / F11): ten tabs of grouped controls. Each tab is a file of this module (`midi.rs`, `audio.rs`,
+//! ...) owning its rows (`page`), the labels of its controls that work today (`LIVE`) and what they do (`act`); this
+//! file is the window, its tabs and the row drawing they share. Every control not in a tab's `LIVE` is drawn greyed
+//! out and only says it is not available yet. The Plugins tab is the plugin manager (search folders, scanning, the
+//! plugin table).
 // spec: ui/settings.md, ui/plugin-manager.md
+
+mod about;
+mod audio;
+mod debug;
+mod file;
+mod general;
+mod info;
+mod midi;
+mod plugins;
+mod project;
+mod theme;
 
 use std::collections::HashSet;
 
@@ -10,8 +23,8 @@ use os_ui::kit::lemon as lk;
 use os_ui::kit::{self, Dir};
 use os_ui::{Color, Font, Rect};
 
-use crate::app::{Action, State, Ui};
-use crate::plugin_db::{self as db, Col, Prefer};
+use crate::app::{Action, App, State, Ui};
+use crate::plugin_db::{Col, Prefer};
 
 /// What a click in the settings window does (`Action::Settings`).
 #[derive(Debug, Clone, PartialEq)]
@@ -96,59 +109,24 @@ pub const AUDIO: usize = 1;
 pub const GENERAL: usize = 2;
 pub const FILE: usize = 3;
 pub const PLUGINS: usize = 4;
-
-/// Opt in to the experimental FL native plugin host (spec plugins/fruity-abi.md), on the Plugins page only with
-/// `OPENSTUDIO_NATIVE_SETTINGS` (`SettingsUi::native`). Labels are the keys for `SAct::Check`; `App::settings_act`
-/// acts on them.
-pub const NATIVE_HOST_CHECK: &str = "Experimental: host installed native plugins";
-/// Shown only while the native host is on: an opened project's native plugins are played by the installed plugins,
-/// never by the built-in Lemon recreations (spec plugins/fruity-abi.md "Opened projects").
-pub const NATIVE_FIRST_CHECK: &str = "Experimental: real native plugins instead of Lemon recreations";
-/// Plugin manager checks (spec: ui/plugin-manager.md §2).
-pub const STARTUP_CHECK: &str = "Find new plugins at startup";
-pub const ERRORS_CHECK: &str = "Rescan plugins with errors";
-pub const COMBINE_CHECK: &str = "Combine formats of the same plugin";
-
-/// Whether `key` is one of the plugin manager's own checks (handled by `App::plugin_check`).
-pub fn plugin_check(key: &str) -> bool {
-    [STARTUP_CHECK, ERRORS_CHECK, COMBINE_CHECK].contains(&key)
-}
-
-/// The checks and buttons that work (by label, handled in `App::settings_act`). Every other check, combo, value box,
-/// slider and button is not available yet: drawn greyed out, its hint and click say so.
-pub const LIVE: &[&str] = &[
-    NATIVE_HOST_CHECK,
-    NATIVE_FIRST_CHECK,
-    STARTUP_CHECK,
-    ERRORS_CHECK,
-    COMBINE_CHECK,
-    "Manage plugins",
-    "Add folder...",
-    "Find new plugins",
-    "Rescan all",
-    "Load theme...",
-    "Reset",
-];
-
-fn live(key: &str) -> bool {
-    LIVE.contains(&key)
-}
-
-/// The combos that work (Audio page: they open a menu of choices, `App::audio_menu`).
-pub const LIVE_COMBOS: [&str; 3] = [OUTPUT_DEVICE, SAMPLE_RATE, BUFFER_LENGTH];
-pub const OUTPUT_DEVICE: &str = "Output device";
-pub const SAMPLE_RATE: &str = "Sample rate (Hz)";
-pub const BUFFER_LENGTH: &str = "Buffer length";
-
-/// A buffer length as the Audio page shows it: frames and milliseconds at `rate`.
-pub fn buffer_text(frames: u32, rate: u32) -> String {
-    format!("{frames} frames ({:.1} ms)", f64::from(frames) * 1000.0 / f64::from(rate.max(1)))
-}
-
 pub const THEME: usize = 5;
 pub const PROJECT: usize = 6;
 pub const INFO: usize = 7;
 pub const DEBUG: usize = 8;
+
+use audio::LIVE_COMBOS;
+pub use plugins::{COMBINE_CHECK, ERRORS_CHECK, STARTUP_CHECK};
+#[cfg(test)]
+pub use audio::{BUFFER_LENGTH, OUTPUT_DEVICE, SAMPLE_RATE};
+#[cfg(test)]
+pub use plugins::{NATIVE_FIRST_CHECK, NATIVE_HOST_CHECK};
+
+/// Each tab's working checks and buttons (`LIVE` of its file). A label works on whichever page shows it.
+const LIVE: [&[&str]; 9] = [midi::LIVE, audio::LIVE, general::LIVE, file::LIVE, plugins::LIVE, theme::LIVE, project::LIVE, info::LIVE, debug::LIVE];
+
+fn live(key: &str) -> bool {
+    LIVE.iter().any(|l| l.contains(&key))
+}
 
 /// Plugin table rows shown at once (spec: ui/plugin-manager.md §2).
 pub const TABLE_ROWS: usize = 18;
@@ -255,300 +233,34 @@ fn dim(name: &'static str, r: Row) -> Row {
     Row::Dim(name, Box::new(r))
 }
 
-/// The groups of page `tab` (spec §4). FL-only groups (cloud, remote app, licence) are left out.
+/// The groups of page `tab` (spec §4), from the tab's own file. FL-only groups (cloud, remote app, licence) are left out.
 pub fn page(tab: usize, s: &State) -> Vec<Group> {
-    use Row::*;
-    let st = &s.settings;
     match tab {
-        MIDI => vec![
-            g("Output", vec![
-                dim("MIDI output devices", List(vec![("", 0.0)], vec![], 8)),
-                pair(Check2("Send master sync", false, "Send all notes off", true), ValueR("Port", "---".into())),
-                pair(Value("0".into(), "Master sync offset (milliseconds)"), combo("MIDI clock", 168.0, "Synchronization type")),
-            ]),
-            g("Input", vec![
-                // The devices that are open: their notes play the selected channel (spec: ui/midi-input.md).
-                List(vec![("Open input devices (notes play the selected channel)", 0.0)], s.midi_inputs.iter().map(|d| vec![d.clone()]).collect(), 9),
-                pair(Check("Enable", true), ValueR("Port", "---".into())),
-                combo("(generic controller)", 250.0, "Controller type"),
-                pair(combo("Velocity", 100.0, "Link note on velocity to"), ValueR("Omni preview MIDI channel", "---".into())),
-                pair(combo("Release", 100.0, "Link release velocity to"), ValueR("Song marker jump MIDI channel", "---".into())),
-                pair(Check("Pickup (takeover mode)", false), ValueR("Performance mode MIDI channel", "---".into())),
-                pair(Check("Auto accept detected controller", true), ValueR("Generator muting MIDI channel", "---".into())),
-                pair(Check("Foot pedal controls note off", true), Check("Toggle on release", false)),
-            ]),
-            g("External sync", vec![
-                pair(combo("Off", 168.0, "External clock sync"), ValueR("External sync offset (milliseconds)", "0".into())),
-                txt("Status: off"),
-            ]),
-            g("", vec![Buttons(vec![("Refresh device list", 136.0), ("Update MIDI scripts", 136.0)])]),
-        ],
-        AUDIO => {
-            // Device, rate and buffer length work (spec: ui/settings.md "Audio"); a choice of "the device's own" shows
-            // what that is.
-            let rate = st.rate.unwrap_or(44100);
-            let rate_text = match st.audio.rate {
-                Some(r) => r.to_string(),
-                None => format!("Device ({rate})"),
-            };
-            let buffer = match st.audio.buffer {
-                Some(b) => buffer_text(b, rate),
-                None => "Device default".into(),
-            };
-            vec![
-                g("Input / output", vec![
-                    combo(&st.device, 360.0, OUTPUT_DEVICE),
-                    combo(&rate_text, 120.0, SAMPLE_RATE),
-                    combo(&buffer, 160.0, BUFFER_LENGTH),
-                    Check("Auto close", false),
-                    Text(st.status[0].clone(), true),
-                    Text(st.status[1].clone(), true),
-                    List(vec![("Output devices", 0.0)], st.devices.iter().map(|d| vec![d.clone()]).collect(), 4),
-                    Check2("Mix in buffer switch", false, "Triple buffer", false),
-                    combo("Highest", 96.0, "Priority"),
-                    Check("Safe overloads", true),
-                    combo("Mixer", 96.0, "Playback tracking"),
-                ]),
-                g("CPU", vec![
-                    Check2("Multithreaded generator processing", true, "Smart disable", true),
-                    Check2("Multithreaded mixer processing", true, "Align tick lengths", false),
-                ]),
-                g("Mixer", vec![
-                    combo("24-point sinc", 122.0, "Resampling quality"),
-                    Value("---".into(), "Browser preview track"),
-                    Value("---".into(), "Metronome track"),
-                    Check("Play truncated notes on transport", true),
-                    Check("Reset plugins on transport", false),
-                ]),
-            ]
-        }
-        GENERAL => vec![
-            Group { note: " (requires a restart to take effect)", ..gf("Display", false, vec![
-                combo("System", 64.0, "Main GUI scaling"),
-                dim("Display PPI", txt("Define 1 inch / 2.54 cm or set display's PPI")),
-                dim("Display PPI", Text("(96 PPI/advised scaling: 100%)".into(), true)),
-                Slider("", 0.25),
-                combo("Main", 64.0, "Pop-ups scaling"),
-                combo("Main", 64.0, "Toolbars scaling"),
-                combo("Off", 64.0, "Transparent windows"),
-                combo("Entertain me", 126.0, "Animations"),
-                Slider("Smoothing", 0.2),
-                combo("Ultrasmooth", 126.0, "Animation refresh rate"),
-                Check2("Force refreshes", true, "Transparent menus", true),
-                Off("Thick lines", true),
-                Check("High visibility", false),
-                combo("Off", 146.0, "Colorful waveforms"),
-            ]) },
-            Group { note: " (requires a restart to take effect)", ..gf("Language", false, vec![
-                combo("English (US) (en)", 176.0, "Language"),
-                combo("English", 176.0, "Note names"),
-                combo("Sharps - #", 96.0, "Black notes"),
-                Buttons(vec![("Update languages", 138.0)]),
-            ]) },
-            gf("Input", false, vec![
-                combo("Multi-button mouse", 136.0, "Optimize for"),
-                Buttons(vec![("Manage shortcuts", 212.0)]),
-                Check("Click-and-hold & special gesture functions", false),
-                Check("Use both mouse buttons in step sequencer", false),
-                Slider("Vertical scrolling speed", 0.5),
-                Slider("Horizontal scrolling speed", 0.5),
-                Check("Invert pencil buttons", false),
-            ]),
-            gf("Undo history", false, vec![
-                Value("100".into(), "Maximum undo levels"),
-                Check("Undo knob tweaks", true),
-                Check("Alternate undo mode", true),
-                Check("Put undone recordings in the recycle bin", true),
-                Check("Show undo history in the browser when undoing changes", false),
-                Check("Show recent changes at the top", false),
-            ]),
-            gf("Hints and warnings", false, vec![
-                Buttons(vec![("Manage messages", 138.0)]),
-                combo("100MB (default)", 110.0, "Project data size warning"),
-            ]),
-            gf("System", false, vec![Check("Associate project files with application", true)]),
-            gf("Updates and privacy", false, vec![
-                Check("Automatically check for updates", true),
-                Check("Automatically download program updates", true),
-                Check("Send usage data", false),
-            ]),
-            gf("Miscellaneous", false, vec![
-                Check("Auto name channels", true),
-                Check("Auto name effect slots", false),
-                Check("Auto zip empty channels", false),
-                Check("Auto select linked modules", true),
-                Check("Auto zoom in piano roll", false),
-                Check("Small scrollbars in editors", false),
-                Check2("Detach all new plugins", false, "Open detached plugins with the main window", false),
-                Check("Disable typing keyboard priority by default", false),
-                Check("Alternate meter scale", false),
-                Check("Show startup splash screen", true),
-                Check("Restore previous state after solo", false),
-                Check("Hide plugin window toolbar by default", true),
-                Check("Silent startup", false),
-                Check("Monophonic painting in piano roll", false),
-                Check("Create automation clips at the playback position", true),
-                Check("Select first channel with notes when the pattern changes", false),
-                Check("Limit the number of open plugin editors", true),
-                combo("Basic with limiter", 160.0, "Default template"),
-                combo("Default template", 160.0, "Startup project"),
-            ]),
-            gf("Advanced", false, vec![
-                Check("Don't limit windows to screen", false),
-                Check("Fast sample preview", true),
-                Check("Auto keep long audio on disk", true),
-                Check2("Read sample tempo information", true, "Read sample root note", true),
-                Check("Initialize controls automatically", true),
-                Check("Force high performance power plan", true),
-                Check("Threaded project sample loading", false),
-                combo("System", 64.0, "Cursors scaling"),
-                combo("Main", 64.0, "Legacy scaling"),
-                combo("Show help in a web browser", 160.0, ""),
-            ]),
-        ],
-        FILE => {
-            let user = os_paths::user_dir().map(|d| format!("{}{}", d.display(), std::path::MAIN_SEPARATOR)).unwrap_or_default();
-            vec![
-                g("Backup", vec![
-                    pair(combo("Occasionally (every 10 minutes)", 336.0, "Autosave"), ValueR("Maximum", "100".into())),
-                    combo("Save to the project data folder if there is one", 336.0, "Location"),
-                ]),
-                g("Plugins", vec![
-                    Buttons(vec![("Manage plugins", 124.0)]),
-                    Text(format!("{} instruments, {} effects", s.plugdb.lists.gens.len(), s.plugdb.lists.fx.len()), true),
-                ]),
-                g("User data folder", vec![txt(user)]),
-                g("Browser extra search folders", vec![dim("Browser extra search folders", List(vec![("Folder", 30.0), ("Browser name", 440.0)], vec![], 12))]),
-                g("External tools", vec![
-                    dim("External tools", List(vec![("File", 30.0), ("Name", 320.0)], vec![], 4)),
-                    dim("External tools", txt("Script editor   C:\\Windows\\System32\\Notepad.exe")),
-                ]),
-                gf("Troubleshooting", true, vec![Buttons(vec![("Repair optional features", 124.0), ("Reset browser cache", 124.0)])]),
-            ]
-        }
-        PLUGINS => {
-            let d = &s.plugdb;
-            let p = &d.prefs;
-            let folders = db::search_dirs(p).into_iter().map(|f| (f.path.display().to_string(), f.tag(), f.on, f.kind == db::DirKind::Added)).collect();
-            let mut scanning = vec![
-                Check(STARTUP_CHECK, p.startup_scan),
-                Check(ERRORS_CHECK, p.rescan_errors),
-                Check(COMBINE_CHECK, p.combine),
-                Prefer(p.prefer),
-            ];
-            // The native host toggle appears only with `OPENSTUDIO_NATIVE_SETTINGS`, the second one only while the
-            // native host is on too.
-            if st.native {
-                scanning.push(Check(NATIVE_HOST_CHECK, os_native::enabled()));
-                if os_native::enabled() {
-                    scanning.push(Check(NATIVE_FIRST_CHECK, os_native::prefer_native()));
-                }
-            }
-            scanning.push(Buttons(vec![("Find new plugins", 130.0), ("Rescan all", 100.0)]));
-            scanning.push(Text(d.status_line(), true));
-            vec![
-                g("Search folders", vec![Folders(folders), Buttons(vec![("Add folder...", 110.0)])]),
-                g("Scanning", scanning),
-                g("Plugins", vec![Table]),
-            ]
-        }
-        THEME => {
-            // (Default) = the Lemon design, then the Classic look, then theme files (spec: ui/lemon-design.md §1).
-            use os_theme::design::lemon as brand;
-            let mut tiles = vec![("(Default)".to_string(), [brand::DARK, brand::MAIN, brand::HIGHLIGHT]), ("Classic".to_string(), swatch(&os_theme::Palette::default()))];
-            for (name, text) in &st.themes {
-                tiles.push((name.clone(), swatch(&os_theme::fl::palette(&os_theme::FlTheme::parse(text)))));
-            }
-            vec![
-                g("Presets", vec![Presets(tiles, st.preset)]),
-                g("Adjustments", vec![ThemeKnobs]),
-                g("Options", vec![Check("Light mode", true), Check("Audio and automation clips use note colors", false)]),
-                g("", vec![Buttons(vec![("Load theme...", 110.0), ("Reset", 64.0), ("Save preset...", 100.0)])]),
-            ]
-        }
-        PROJECT => vec![
-            g("Data folder", vec![
-                combo("Don't use a data folder", 306.0, ""),
-                txt("(none)"),
-                combo("When saving unsaved projects only", 444.0, "Ask for data folder"),
-                Off("Copy used samples to the project folder", false),
-            ]),
-            g("Time settings", vec![
-                combo(&s.project.ppq.to_string(), 44.0, "Timebase (PPQ)"),
-                combo("Set as time signature", 196.0, ""),
-                combo("4", 44.0, "Numerator"),
-                combo("4", 44.0, "Denominator"),
-            ]),
-            gf("Advanced", true, vec![
-                combo("Circular", 82.0, "Panning law"),
-                Check("Play truncated notes in clips", true),
-                Check("Fast declick for cut groups", false),
-            ]),
-            gf("Playlist", false, vec![Check2("Automatic crossfades", true, "Enable automatic crossfades in new projects", true)]),
-        ],
-        INFO => {
-            let i = &s.project.info;
-            let or = |v: &Option<String>| v.clone().unwrap_or_default();
-            let clips: usize = s.project.arrangements.iter().map(|a| a.clips.len()).sum();
-            let notes: usize = s.project.patterns.iter().map(|p| p.notes.len()).sum();
-            let mut rows = vec![
-                Text("Title".into(), true),
-                Big(or(&i.title)),
-                Text("Author".into(), true),
-                Big(or(&i.author)),
-                Text("Genre".into(), true),
-                Big(or(&i.genre)),
-                Text("Comments".into(), true),
-            ];
-            let comments = or(&i.comments);
-            let lines: Vec<String> = comments.lines().map(String::from).collect();
-            rows.push(List(vec![("", 0.0)], lines.into_iter().map(|l| vec![l]).collect(), 14));
-            rows.push(Text("Web link".into(), true));
-            rows.push(Big(or(&i.url)));
-            rows.push(Gap(8.0));
-            rows.push(txt(format!("Channels: {}, Mixer Tracks: {}", s.project.channels.len(), s.project.mixer.len())));
-            rows.push(txt(format!("Arrangements: {}, PL clips: {clips}, Notes: {notes}", s.project.arrangements.len())));
-            vec![g("Project credits", rows)]
-        }
-        DEBUG => {
-            let mut lines = vec![
-                format!("Lemon Studio {}", env!("CARGO_PKG_VERSION")),
-                format!("Project: {}", s.path.as_ref().map_or("(new project)".into(), |p| p.display().to_string())),
-                format!("Saved by: {}", s.project.saved_by),
-                format!("PPQ {}, tempo {:.3}", s.project.ppq, s.tempo),
-                format!("Channels {}, patterns {}, mixer tracks {}", s.project.channels.len(), s.project.patterns.len(), s.project.mixer.len()),
-                format!("Output device: {}", st.device),
-                format!("Device rate: {:?}", st.rate),
-                format!("Instruments listed: {}, effects listed: {}", s.plugdb.lists.gens.len(), s.plugdb.lists.fx.len()),
-            ];
-            lines.extend(s.plugdb.lists.gens.iter().map(|e| format!("  {} ({})", e.label, db::format_label(e.format))));
-            if let Some(m) = &s.message {
-                lines.push(format!("Last message: {m}"));
-            }
-            vec![g("", vec![List(vec![("", 0.0)], lines.into_iter().map(|l| vec![l]).collect(), 40)])]
-        }
-        // About also carries what FL's Account tab had (spec: ui/plugin-manager.md §2).
-        _ => vec![
-            g("", vec![
-                Gap(20.0),
-                Big(format!("Lemon Studio {}", env!("CARGO_PKG_VERSION"))),
-                txt("A digital audio workstation written in Rust."),
-                Gap(10.0),
-                txt("Licence: GNU General Public License v3."),
-                txt("Fonts: Cuprum (SIL Open Font License). Icons: Tabler Icons (MIT)."),
-            ]),
-            g("Licence", vec![
-                Big("Lemon Studio needs no account.".into()),
-                txt("It is free software under the GNU General Public License, version 3."),
-                txt("No registration, no online services, no usage data."),
-            ]),
-        ],
+        MIDI => midi::page(s),
+        AUDIO => audio::page(s),
+        GENERAL => general::page(s),
+        FILE => file::page(s),
+        PLUGINS => plugins::page(s),
+        THEME => theme::page(s),
+        PROJECT => project::page(s),
+        INFO => info::page(s),
+        DEBUG => debug::page(s),
+        _ => about::page(s),
     }
 }
 
-/// Three colours that represent a palette on its preset tile: surface, highlight, selection.
-fn swatch(p: &os_theme::Palette) -> [Color; 3] {
-    [p.s(0x2b2d30), p.h(0xffaf65), p.a(0x9ad04a)]
+/// What a click on a page's control does: the tab files' own handling, in tab order (`App::settings_act` handles the
+/// window's body, close, tabs and group folds first). Returns false when no tab handles `a`.
+pub(crate) fn act(app: &mut App, a: &SAct) -> bool {
+    midi::act(app, a)
+        || audio::act(app, a)
+        || general::act(app, a)
+        || file::act(app, a)
+        || plugins::act(app, a)
+        || theme::act(app, a)
+        || project::act(app, a)
+        || info::act(app, a)
+        || debug::act(app, a)
 }
 
 fn row_h(r: &Row) -> f32 {

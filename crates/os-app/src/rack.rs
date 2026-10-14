@@ -3,13 +3,16 @@
 //! the graph editor values and the per-channel loop lengths.
 // spec: ui/channel-rack.md
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use os_model::{target, ChannelKind, ClipSource, Note, Project, Rgb};
 
-use crate::app::{App, State, Win};
+use crate::app::{Action, App, Drag, State, Win, HINT_RECT};
 use crate::knobs::KnobId;
 use crate::playlist::{Cmd, Mark, PItem, Popup};
+use crate::transport::State as TransportState;
+use crate::views;
 
 /// Name button width at 100 % (§17): wide enough for a new project's "Lemon Sampler" at every UI scale with every text
 /// engine; Linux's Barlow is the widest (Lemon Studio).
@@ -1868,6 +1871,278 @@ pub fn to_model(s: &mut State) {
         let pat = crate::patterns::pat_mut(s, n);
         pat.loops = loops;
         pat.loop_off = loop_off;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Mouse input in the rack (spec: ui/channel-rack.md §7-15, §22): presses (`App::rack_act`, `App::rack_right`) and the
+// drags that follow them (`drag_move`).
+
+/// A channel rack drag moved to (`x`, `y`) (`App::mouse_move`).
+pub(crate) fn drag_move(app: &mut App, d: Drag, x: f32, y: f32) {
+    match d {
+        Drag::RackResize { edges, m0, s0 } => {
+            let old = views::rack::bounds(&app.state);
+            let s = &mut app.state;
+            let w = if edges & views::rack::EDGE_RIGHT != 0 { s0.0 + x - m0.0 } else { s0.0 };
+            let h = if edges & views::rack::EDGE_BOTTOM != 0 { s0.1 + y - m0.1 } else { s0.1 };
+            s.rack_size = views::rack::snap_size(s, w, h);
+            let new = views::rack::bounds(&app.state);
+            app.damage_rect(old.union(&new));
+        }
+        Drag::RackMixer { ch, y0, v0 } => {
+            // One insert per 10 px, up = higher (spec: ui/channel-rack.md §12).
+            let v = (i32::from(v0) + ((y0 - y) / crate::rack::MIXER_DRAG).round() as i32).clamp(0, i32::from(crate::mixer::max_insert(&app.state.project))) as u16;
+            let s = &mut app.state;
+            if let Some(c) = s.project.channels.get_mut(ch) {
+                if c.mixer_track != v {
+                    c.mixer_track = v;
+                    s.piano.dirty = true;
+                }
+            }
+            app.hint = Cow::Owned(format!("Target mixer track: {}", views::rack::insert_name(v)));
+            let r = app.hits.iter().rev().find(|h| h.action == Action::RackMixer(ch)).map(|h| h.rect);
+            match r {
+                Some(r) => app.damage_rect(r.outset(2.0)),
+                None => app.invalidate(),
+            }
+            app.damage_rect(HINT_RECT);
+        }
+        Drag::RackPaint { row, on, last } => {
+            if let Some(k) = views::rack::step_at(&app.state, x) {
+                if k != last {
+                    for j in last.min(k)..=last.max(k) {
+                        crate::rack::set_step(&mut app.state, row, j, on);
+                    }
+                    app.drag = Some(Drag::RackPaint { row, on, last: k });
+                    app.invalidate();
+                }
+            }
+        }
+        Drag::RackSel { from } => {
+            if let Some(r) = views::rack::row_at(&app.state, y) {
+                let shown = crate::rack::shown(&app.state);
+                if let (Some(a), Some(b)) = (shown.iter().position(|&x| x == from), shown.iter().position(|&x| x == r)) {
+                    app.state.rack.sel = shown[a.min(b)..=a.max(b)].iter().copied().collect();
+                }
+            }
+            app.invalidate();
+        }
+        Drag::RackDots { x0, p0 } => {
+            let w = p0 as f32 / 100.0 * crate::rack::NAME_W + (x - x0);
+            let pct = (w / crate::rack::NAME_W * 100.0).round().clamp(30.0, 400.0) as u32;
+            crate::rack::relayout(&mut app.state, |s| s.rack.name_pct = pct);
+            app.hint = Cow::Owned(format!("Channel button width: {pct}%"));
+            app.invalidate();
+        }
+        Drag::RackLen { y0, v0 } => {
+            let v = (v0 as i32 + ((y0 - y) / crate::rack::LEN_DRAG).round() as i32).clamp(0, crate::rack::MAX_STEPS as i32) as u32;
+            crate::rack::set_len(&mut app.state, (v > 0).then_some(v));
+            app.hint = Cow::Owned(if v == 0 { "Pattern length: Auto".into() } else { format!("Pattern length: {v} steps") });
+            app.invalidate();
+        }
+        Drag::RackLoopLen { row, y0, v0 } => {
+            let v = (v0 as i32 + ((y0 - y) / crate::rack::LEN_DRAG).round() as i32).clamp(1, crate::rack::MAX_STEPS as i32) as u32;
+            app.state.rack.loop_len.insert(row, v);
+            app.state.piano.dirty = true;
+            app.hint = Cow::Owned(format!("Loop point: {v} steps"));
+            app.invalidate();
+        }
+        Drag::RackGraph => app.rack_graph_at((x, y)),
+        _ => {}
+    }
+}
+
+impl App {
+    /// Name button click (spec: ui/channel-rack.md §13): opens the channel's plugin window, or closes it when open.
+    pub(crate) fn toggle_channel_window(&mut self, i: usize) {
+        if self.state.hosted_rows.contains(&i) {
+            if !self.plugins.close_if_open(i) {
+                self.state.pending_open = Some(i);
+            }
+            return;
+        }
+        let s = &mut self.state;
+        if s.project.channels.get(i).is_some_and(|c| c.kind.is_sampler()) {
+            // Not hosted yet (just added): Lemon Sampler starts on the next tick and its window opens then.
+            s.pending_open = Some(i);
+            self.sampler_failed.retain(|&r| r != i);
+        } else if s.shown(Win::Plugin) && s.plugin_channel == i {
+            s.hide(Win::Plugin);
+        } else {
+            if !s.shown(Win::Plugin) {
+                let r = views::rack::rect(s);
+                s.plugin_pos = ((r.right() + 8.0).min(1920.0 - 440.0), r.y.min(1080.0 - 210.0));
+            }
+            s.plugin_channel = i;
+            s.raise(Win::Plugin);
+        }
+    }
+
+    /// Press on a step (spec: ui/channel-rack.md §9): selects the row, toggles the step, starts painting.
+    pub(crate) fn rack_step(&mut self, i: usize, k: u32) {
+        self.state.rack.select_only(i);
+        self.focus_channel(i);
+        let s = &mut self.state;
+        s.piano.clear_selection();
+        // A step past an explicit length grows the pattern to the bar holding it (§5).
+        if let Some(l) = crate::rack::explicit_len(s) {
+            if k >= l {
+                crate::rack::set_len(s, Some((k / 16 + 1) * 16));
+            }
+        }
+        let on = crate::rack::toggle_step(s, i, k);
+        self.drag = Some(Drag::RackPaint { row: i, on, last: k });
+    }
+
+    /// Speaker (spec: ui/channel-rack.md §7): plays the current pattern; while it plays, pauses / resumes.
+    pub(crate) fn rack_speaker(&mut self) {
+        match self.transport.state() {
+            TransportState::Playing if !self.state.song_mode => self.transport.pause(),
+            TransportState::Paused if !self.state.song_mode => self.transport.resume(),
+            _ => {
+                if self.transport.playing() {
+                    self.transport.stop();
+                }
+                self.state.song_mode = false;
+                self.start_playback();
+            }
+        }
+    }
+
+    /// Graph editor click / drag at a screen point (spec: ui/channel-rack.md §14).
+    pub(crate) fn rack_graph_at(&mut self, (x, y): (f32, f32)) {
+        let Some(b) = views::rack::graph_bars(&self.state) else { return };
+        let Some(k) = views::rack::step_at(&self.state, x) else { return };
+        let v = ((b.bottom() - y) / b.h).clamp(0.0, 1.0);
+        if let Some(t) = crate::rack::graph_set(&mut self.state, k, v) {
+            self.hint = Cow::Owned(t);
+        }
+        self.invalidate();
+    }
+
+    /// Channel rack left clicks (spec: ui/channel-rack.md §7-15, §22). Returns whether `a` was one.
+    pub(crate) fn rack_act(&mut self, a: &Action) -> bool {
+        use crate::rack as rk;
+        let (shift, ctrl, alt) = (self.shift, self.ctrl, self.alt);
+        let now = std::time::Instant::now();
+        let double = matches!(&self.rack_click, Some((p, t)) if p == a && now.duration_since(*t).as_millis() < 400);
+        if matches!(a, Action::RackSelect(_) | Action::RackMixer(_)) {
+            self.rack_click = if double { None } else { Some((a.clone(), now)) };
+        }
+        let mouse = self.mouse;
+        match *a {
+            Action::RackSelect(i) => {
+                if double {
+                    self.state.rack.sel = rk::shown(&self.state).into_iter().collect();
+                } else if shift {
+                    let sel = &mut self.state.rack.sel;
+                    if !sel.remove(&i) {
+                        sel.insert(i);
+                    }
+                } else {
+                    self.state.rack.select_only(i);
+                    self.focus_channel(i);
+                    self.drag = Some(Drag::RackSel { from: i });
+                }
+            }
+            Action::ChannelSelect(i) => {
+                if shift {
+                    let at = views::rack::name_rect(&self.state, i).map_or(mouse, |r| (r.x, r.y));
+                    rk::open_box(&mut self.state, rk::RBox::Channel(i), at);
+                } else if !ctrl {
+                    self.state.rack.select_only(i);
+                    self.focus_channel(i);
+                    self.toggle_channel_window(i);
+                }
+            }
+            Action::ChannelEnable(i) => {
+                let s = &mut self.state;
+                if ctrl || alt {
+                    rk::solo(s, i);
+                } else if shift {
+                    rk::toggle_lock(s, i);
+                } else {
+                    rk::toggle_mute(s, i);
+                }
+            }
+            Action::Step(i, k) => self.rack_step(i, k),
+            Action::RackMixer(i) => {
+                let s = &mut self.state;
+                if double {
+                    if let Some(t) = s.project.channels.get(i).map(|c| c.mixer_track) {
+                        s.selected_mixer = t;
+                        s.raise(Win::Mixer);
+                    }
+                } else {
+                    let v0 = s.project.channels.get(i).map_or(0, |c| c.mixer_track);
+                    self.drag = Some(Drag::RackMixer { ch: i, y0: mouse.1, v0 });
+                }
+            }
+            Action::RackOptions => {
+                let p = rk::options_menu(&self.state, self.state.rack_pos.0, self.state.rack_pos.1 + 28.0);
+                self.state.playlist.popup = Some(p);
+            }
+            Action::RackFilter => {
+                let p = rk::filter_menu(&self.state, mouse.0, mouse.1 + 8.0);
+                self.state.playlist.popup = Some(p);
+            }
+            Action::RackDots => self.drag = Some(Drag::RackDots { x0: mouse.0, p0: self.state.rack.name_pct }),
+            Action::RackSpeaker => self.rack_speaker(),
+            Action::RackLen => self.drag = Some(Drag::RackLen { y0: mouse.1, v0: rk::len_value(&self.state) }),
+            Action::RackLoop => {
+                let s = &mut self.state;
+                rk::relayout(s, |s| s.rack.loop_mode = !s.rack.loop_mode);
+                s.piano.dirty = true;
+            }
+            Action::RackGraph => self.state.rack.graph_open = !self.state.rack.graph_open,
+            Action::RackLoopBox(i) => self.drag = Some(Drag::RackLoopLen { row: i, y0: mouse.1, v0: rk::row_len(&self.state, i) }),
+            Action::RackGraphArea => {
+                self.rack_graph_at(mouse);
+                self.drag = Some(Drag::RackGraph);
+            }
+            Action::RackGraphTab(i) => self.state.rack.graph_tab = rk::Tab::ALL[i.min(rk::Tab::ALL.len() - 1)],
+            Action::RackFill(h) => rk::fill_hit(&mut self.state, h),
+            _ => return false,
+        }
+        self.invalidate();
+        true
+    }
+
+    /// Channel rack right clicks (spec: ui/channel-rack.md §8-19). Returns whether `a` was one.
+    pub(crate) fn rack_right(&mut self, a: &Action) -> bool {
+        use crate::knobs::KnobId;
+        use crate::rack as rk;
+        let (x, y) = self.mouse;
+        let s = &self.state;
+        let popup = match *a {
+            Action::ChannelSelect(i) => rk::channel_menu(s, i, x, y),
+            Action::ChannelEnable(i) => rk::led_menu(s, i, x, y),
+            Action::RackMixer(i) => rk::mixer_menu(s, i, x, y),
+            Action::Knob(k @ (KnobId::ChanVol(_) | KnobId::ChanPan(_) | KnobId::Swing)) => rk::knob_menu(s, k, self.automation_target(a), x, y),
+            Action::RackFilter => rk::filter_edit_menu(s, x, y),
+            Action::RackLen => rk::length_menu(s, x, y),
+            Action::RackLoop => rk::loop_menu(s, x, y),
+            Action::RackSelect(i) => {
+                let sel = &mut self.state.rack.sel;
+                if !sel.remove(&i) {
+                    sel.insert(i);
+                }
+                return true;
+            }
+            Action::Step(i, k) => {
+                self.rack_step(i, k);
+                return true;
+            }
+            Action::RackGraphArea => {
+                self.rack_graph_at((x, y));
+                self.drag = Some(Drag::RackGraph);
+                return true;
+            }
+            _ => return false,
+        };
+        self.state.playlist.popup = Some(popup);
+        true
     }
 }
 
