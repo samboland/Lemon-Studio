@@ -1813,6 +1813,21 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
                 }
             }
         }
+        // A layer's children (event 94, one per child) and settings (event 144) (spec: flp/events/channels.md,
+        // audio/note-rules.md "Layer channels"): the children are rewritten where the first one was, else right
+        // after the target (104); the settings are set, or added at the block's end.
+        if ch.layer_children != old.layer_children {
+            let kids: Vec<usize> = (loc.start + 1..loc.end).filter(|&k| events[k].id == id::CH_LAYER_CHILD).collect();
+            let at = kids.first().copied().or(loc.target.map(|i| i + 1)).unwrap_or(loc.end);
+            removals.extend(kids.iter().copied());
+            inserts.extend(ch.layer_children.iter().rev().map(|&c| (at, Event::new(id::CH_LAYER_CHILD, Value::U16(c)))));
+        }
+        if ch.misc.layer.flags != old.misc.layer.flags {
+            match (loc.start + 1..loc.end).find(|&k| events[k].id == id::CH_LAYER_FLAGS) {
+                Some(i) => set_int(&mut events[i], ch.misc.layer.flags),
+                None => inserts.push((loc.end, Event::new(id::CH_LAYER_FLAGS, Value::U32(ch.misc.layer.flags)))),
+            }
+        }
     }
 
     // New channels go after the last channel block (spec: flp/events/channels.md; automation.md for type 5).
@@ -2597,6 +2612,9 @@ fn channel_block_events(ch: &Channel, auto: Option<&Automation>, enc: TextEnc) -
     b.push(Event::new(id::CH_TARGET, Value::U16(ch.mixer_track)));
     for child in &ch.layer_children {
         b.push(Event::new(id::CH_LAYER_CHILD, Value::U16(*child)));
+    }
+    if ch.misc.layer.flags != 0 {
+        b.push(Event::new(id::CH_LAYER_FLAGS, Value::U32(ch.misc.layer.flags)));
     }
     if ch.rack.zipped {
         b.push(Event::new(id::CH_ZIPPED, Value::U8(1)));
