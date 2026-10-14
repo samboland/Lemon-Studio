@@ -672,18 +672,18 @@ pub fn paint(ui: &mut Ui, s: &State) {
     let rects = tab_rects(ui, r);
     for (i, &(label, _, _)) in TABS.iter().enumerate() {
         let tr = rects[i];
-        let hov = ui.hit(tr, Action::Settings(SAct::Tab(i)), TABS[i].1);
+        ui.hit(tr, Action::Settings(SAct::Tab(i)), TABS[i].1);
         let on = i == st.tab;
         let body = if on { t.s(0x1d1e1f) } else { t.s(0x222425) };
         if lemon {
             let pill = Rect::new(tr.x, tr.y + 2.0, tr.w, tr.h - 6.0);
             if on {
-                lk::lit(ui.c, pill, lk::r_btn(t), hov);
+                lk::lit(ui.c, pill, lk::r_btn(t), false);
             } else {
-                ui.c.fill_rrect(pill, lk::r_btn(t), if hov { t.button_hi } else { body });
+                ui.c.fill_rrect(pill, lk::r_btn(t), body);
             }
         } else {
-            let body = if on { t.s(0x191b1c) } else if hov { t.button_hi } else { t.s(0x202224) };
+            let body = if on { t.s(0x191b1c) } else { t.s(0x202224) };
             ui.c.fill_rrect(tr, 5.0, body);
             ui.c.fill_polygon(&[(tr.x, tr.bottom() - 5.0), (tr.x, tr.bottom()), (tr.right() + 14.0, tr.bottom()),
                 (tr.right(), tr.y + 5.0), (tr.right() - 5.0, tr.y + 5.0), (tr.right() - 5.0, tr.bottom() - 5.0)], body);
@@ -692,8 +692,6 @@ pub fn paint(ui: &mut Ui, s: &State) {
             lk::ink_on_lemon()
         } else if on {
             Color::rgb(0x00afff)
-        } else if hov {
-            t.glyph
         } else {
             t.text
         };
@@ -702,7 +700,6 @@ pub fn paint(ui: &mut Ui, s: &State) {
         ui.c.text_center(font, Rect::new(tr.x, (ty - lh / 2.0).round(), tr.w, lh), col, label);
     }
     let page_color = if lemon { t.s(0x343638) } else { t.s(0x2e3032) };
-    ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + TABS_B, r.w - 2.0, 1.0), page_color);
     // Page.
     let area = Rect::new(r.x + 1.0, r.y + TABS_B + 1.0, r.w - 2.0, r.h - TABS_B - 3.0);
     let total = content_h(s);

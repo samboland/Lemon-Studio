@@ -3,6 +3,7 @@
 Drag the Settings title bar to move the window. Its position remains during the
 session. The window stays inside the visible area when the main window shrinks.
 The close button, Escape, tab selection, and page scrolling keep their actions.
+Tabs show a hand cursor on hover. Their appearance changes only when selected.
 
 Settings uses shared window drag handling and a flat frame without an outer
 shadow. Classic Settings uses semibold system text, slanted tabs, and small section headers.

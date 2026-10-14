@@ -320,6 +320,7 @@ impl Shell {
             self.cursor = c;
             window.set_cursor(match c {
                 app::Cursor::Default => CursorIcon::Default,
+                app::Cursor::Pointer => CursorIcon::Pointer,
                 app::Cursor::EwResize => CursorIcon::EwResize,
                 app::Cursor::NsResize => CursorIcon::NsResize,
                 app::Cursor::NwseResize => CursorIcon::NwseResize,

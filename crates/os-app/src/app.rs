@@ -103,6 +103,7 @@ pub const TITLE_H: f32 = 23.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cursor {
     Default,
+    Pointer,
     EwResize,
     NsResize,
     NwseResize,
@@ -3600,6 +3601,7 @@ impl App {
             _ => 0,
         };
         match edges {
+            0 if self.drag.is_none() && matches!(self.hover, Some(Action::Settings(views::settings::SAct::Tab(_)))) => Cursor::Pointer,
             0 if self.resize_cursor => Cursor::EwResize,
             0 => Cursor::Default,
             views::rack::EDGE_RIGHT => Cursor::EwResize,
