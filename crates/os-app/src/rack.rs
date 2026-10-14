@@ -1333,6 +1333,57 @@ pub enum RAct {
     KeyOctave(i32),
 }
 
+/// Pixels a name button press must move before it drags the channel (Lemon Studio choice).
+pub const MOVE_DRAG: f32 = 6.0;
+
+/// What a name button press did to the plugin window, undone when the press turns into a channel drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinUndo {
+    Nothing,
+    /// It opened the channel window: close it.
+    Hide,
+    /// It closed the channel window: open it again.
+    Show,
+    /// It asked for the hosted plugin's window: don't.
+    ClearPending,
+    /// It closed the hosted plugin's window: ask for it again.
+    Reopen,
+}
+
+/// The plugin window state of row `r` that a name button press may change.
+fn win_state(s: &State, r: usize) -> (bool, Option<usize>) {
+    (s.shown(Win::Plugin) && s.plugin_channel == r, s.pending_open)
+}
+
+/// What undoes the press on row `r`'s name button, from the state before it.
+fn win_undo(s: &State, r: usize, before: (bool, Option<usize>)) -> WinUndo {
+    let now = win_state(s, r);
+    if now.1 == Some(r) && before.1 != Some(r) {
+        WinUndo::ClearPending
+    } else if s.hosted_rows.contains(&r) {
+        WinUndo::Reopen
+    } else if now.0 && !before.0 {
+        WinUndo::Hide
+    } else if !now.0 && before.0 {
+        WinUndo::Show
+    } else {
+        WinUndo::Nothing
+    }
+}
+
+fn apply_undo(s: &mut State, r: usize, u: WinUndo) {
+    match u {
+        WinUndo::Nothing => {}
+        WinUndo::Hide => s.hide(Win::Plugin),
+        WinUndo::Show => {
+            s.plugin_channel = r;
+            s.raise(Win::Plugin);
+        }
+        WinUndo::ClearPending => s.pending_open = None,
+        WinUndo::Reopen => s.pending_open = Some(r),
+    }
+}
+
 /// Commands of the rack's popup menus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RCmd {
@@ -2537,6 +2588,32 @@ pub(crate) fn drag_move(app: &mut App, d: Drag, x: f32, y: f32) {
             app.invalidate();
         }
         Drag::RackGraph => app.rack_graph_at((x, y)),
+        Drag::RackMove { row, y0, undo, moved } => {
+            // A name button dragged up or down moves its channel (Lemon Studio choice; FL moves the selected channel
+            // with Shift+wheel over a channel button, or Alt+Up / Down).
+            if !moved && (y - y0).abs() < MOVE_DRAG {
+                return;
+            }
+            if !moved {
+                apply_undo(&mut app.state, row, undo);
+            }
+            let mut row = row;
+            if let Some(t) = views::rack::row_at(&app.state, y) {
+                let mut left = app.state.project.channels.len();
+                while row != t && left > 0 {
+                    let dir = if t < row { -1 } else { 1 };
+                    app.state.rack.select_only(row);
+                    move_selected(app, dir);
+                    row = row.saturating_add_signed(dir as isize);
+                    left -= 1;
+                }
+                app.state.selected_channel = row;
+                app.hint = Cow::Owned(format!("Move channel: row {}", row + 1));
+                app.damage_rect(HINT_RECT);
+            }
+            app.drag = Some(Drag::RackMove { row, y0, undo: WinUndo::Nothing, moved: true });
+            app.invalidate();
+        }
         _ => {}
     }
 }
@@ -2640,9 +2717,12 @@ impl App {
                     let at = views::rack::name_rect(&self.state, i).map_or(mouse, |r| (r.x, r.y));
                     rk::open_box(&mut self.state, rk::RBox::Channel(i), at);
                 } else if !ctrl {
+                    let before = rk::win_state(&self.state, i);
                     self.state.rack.select_only(i);
                     self.focus_channel(i);
                     self.toggle_channel_window(i);
+                    let undo = rk::win_undo(&self.state, i, before);
+                    self.drag = Some(Drag::RackMove { row: i, y0: mouse.1, undo, moved: false });
                 }
             }
             Action::ChannelEnable(i) => {
@@ -3204,6 +3284,30 @@ mod tests {
             assert!(app.hits.iter().any(|h| h.action == Action::Rack(RAct::KeyOctave(-1))));
             assert!(!app.hits.iter().any(|h| matches!(h.action, Action::Placeholder(n) if n.contains("piano roll preview"))));
         }
+    }
+
+    /// Dragging a name button up or down moves its channel; the press's plugin window request is dropped.
+    #[test]
+    fn name_button_drag_moves_the_channel() {
+        let mut app = App::new(None);
+        let Ok(mut c) = os_ui::Canvas::new(1920, 1080, 1.0) else { return };
+        app.state.raise(Win::ChannelRack);
+        app.paint(&mut c, None);
+        let rect = |app: &App, i: usize| app.hits.iter().rev().find(|h| h.action == Action::ChannelSelect(i)).map(|h| h.rect).expect("name button");
+        let (a, b) = (rect(&app, 0), rect(&app, 2));
+        let before = names(&app);
+        app.mouse_move(a.cx(), a.cy());
+        app.mouse_down();
+        assert_eq!(app.state.pending_open, Some(0), "a click opens the channel's window");
+        app.mouse_move(a.cx(), a.cy() + 2.0);
+        assert_eq!(names(&app), before, "a small wobble is still a click");
+        app.mouse_move(b.cx(), b.cy());
+        app.mouse_up();
+        let after = names(&app);
+        assert_eq!(after[2], before[0]);
+        assert_eq!((after[0].clone(), after[1].clone()), (before[1].clone(), before[2].clone()));
+        assert_eq!(app.state.pending_open, None, "the drag dropped the window request");
+        assert_eq!(app.state.selected_channel, 2);
     }
 
     #[test]

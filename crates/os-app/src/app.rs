@@ -720,6 +720,8 @@ pub enum Drag {
     RackLen { y0: f32, v0: u32 },
     RackLoopLen { row: usize, y0: f32, v0: u32 },
     RackGraph,
+    /// A name button dragged up / down moves its channel (`moved` once it left the press point).
+    RackMove { row: usize, y0: f32, undo: crate::rack::WinUndo, moved: bool },
 }
 
 pub struct State {
@@ -3022,7 +3024,8 @@ impl App {
                 | Drag::RackDots { .. }
                 | Drag::RackLen { .. }
                 | Drag::RackLoopLen { .. }
-                | Drag::RackGraph) => crate::rack::drag_move(self, d, x, y),
+                | Drag::RackGraph
+                | Drag::RackMove { .. }) => crate::rack::drag_move(self, d, x, y),
                 Drag::PatternBox { y0, p0 } => {
                     let (y0, p0): (f32, u16) = (y0.to_owned(), p0.to_owned());
                     let steps = ((y0 - y) / crate::patterns::DRAG_STEP).trunc() as i32;
