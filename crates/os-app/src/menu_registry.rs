@@ -34,6 +34,8 @@ pub const AREAS: &[Area] = &[
     Area { name: "help", handles: crate::menu_help::menu_handles, run: crate::menu_help::menu_run },
     // PATTERNS commands and ADD > Pattern (spec: ui/pattern-menu.md).
     Area { name: "patterns", handles: crate::patterns::menu_handles, run: crate::patterns::menu_run },
+    // Playlist entries in TOOLS (lock tracks to content) and ADD > Automation clip (spec: ui/playlist.md).
+    Area { name: "playlist", handles: crate::playlist_menu::menu_handles, run: crate::playlist_menu::menu_run },
     // Last tweaked parameter entries in ADD and TOOLS (spec: plugins/plugin-parameters.md §5).
     Area { name: "params", handles: params_handles, run: params_run },
 ];

@@ -46,6 +46,7 @@ mod rack;
 mod patterns;
 mod perf;
 mod playlist;
+mod playlist_menu;
 mod plugin_db;
 mod plugin_manager;
 mod plugin_menu;
