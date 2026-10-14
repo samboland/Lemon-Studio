@@ -21,7 +21,7 @@ use os_theme::{Design, Palette, Theme};
 use os_ui::{Canvas, Rect};
 use winit::keyboard::KeyCode;
 
-use crate::piano::{self, Geom, Overlay, PianoState, Tool};
+use crate::piano::{self, Geom, PianoState, Tool};
 use crate::transport::{State as TransportState, Transport};
 use crate::views;
 
@@ -484,7 +484,7 @@ fn hover_is_visible(a: &Action) -> bool {
 }
 
 /// Pixels from a note's right end that grab the end for resizing (spec: ui/piano-roll.md §8).
-fn resize_zone(note_w: f32) -> f32 {
+pub(crate) fn resize_zone(note_w: f32) -> f32 {
     (note_w / 3.0).clamp(2.0, 8.0)
 }
 
@@ -921,7 +921,7 @@ pub struct App {
     /// Last title-bar press (window, time, position), for double-click maximize / restore.
     title_click: Option<(Win, std::time::Instant, (f32, f32))>,
     /// Last channel-rack press (action, time), for double clicks on slots and mixer boxes (§8, §12).
-    rack_click: Option<(Action, std::time::Instant)>,
+    pub(crate) rack_click: Option<(Action, std::time::Instant)>,
     /// Last press on the CPU panel, for its double click (the Plugin performance monitor).
     cpu_click: Option<std::time::Instant>,
     pub hint: Cow<'static, str>,
@@ -955,9 +955,9 @@ pub struct App {
     /// Piano roll regions from the last paint (window, grid, velocity panel).
     piano_win: Option<Rect>,
     pub(crate) piano_grid: Option<Rect>,
-    piano_panel: Option<Rect>,
+    pub(crate) piano_panel: Option<Rect>,
     /// Sampler channel rows whose Lemon Sampler instance could not be created (not retried).
-    sampler_failed: Vec<usize>,
+    pub(crate) sampler_failed: Vec<usize>,
     /// Mixer slots (`plugins::fx_key`) whose Lemon Parametric EQ 2 could not start (not retried).
     pub(crate) fx_failed: Vec<usize>,
     /// The running plugin scan, and the scan asked for while it runs (spec: ui/plugin-manager.md §4).
@@ -2581,7 +2581,7 @@ impl App {
     }
 
     /// Repaint the piano roll body (note edits change the grid, overview and velocity panel).
-    fn damage_piano(&mut self) {
+    pub(crate) fn damage_piano(&mut self) {
         match self.piano_win {
             Some(r) => self.damage_rect(r),
             None => self.invalidate(),
@@ -2592,7 +2592,7 @@ impl App {
         }
     }
 
-    fn piano_geom(&self) -> Option<Geom> {
+    pub(crate) fn piano_geom(&self) -> Option<Geom> {
         self.piano_grid.map(|g| Geom::new(&self.state, g))
     }
 
@@ -2954,81 +2954,20 @@ impl App {
                         }
                     }
                 }
-                Drag::NoteMove { x0, y0, orig } => {
-                    self.drag_notes(x0, y0, &orig, false);
-                    self.state.piano.dirty = true;
-                }
-                Drag::NoteResize { x0, orig } => {
-                    self.drag_notes(x0, 0.0, &orig, true);
-                    self.state.piano.dirty = true;
-                }
-                Drag::NoteErase => self.erase_at(x, y),
-                Drag::NoteMute { on } => self.mute_at(x, y, on),
-                Drag::NotePaint { key, start, len } => self.paint_notes(key, start, len),
-                Drag::Marquee { x0, y0, base } => {
-                    let r = Rect::span(x0.min(x), x0.max(x), y0.min(y), y0.max(y));
-                    self.state.piano.overlay = Some(Overlay::Marquee(r));
-                    if let Some(g) = self.piano_geom() {
-                        let s = &mut self.state;
-                        let mut sel = base.clone();
-                        sel.extend(piano::notes_in(s, &g, r).into_iter().filter(|i| !base.contains(i)));
-                        if let Some(ch) = piano::channel(s) {
-                            s.piano.select(s.pattern, ch, sel);
-                        }
-                    }
-                    self.damage_piano();
-                }
-                Drag::Slice => {
-                    if let Some(g) = self.piano_geom() {
-                        let t = g.snap_down(g.tick_at(x) + g.step as f32 / 2.0);
-                        self.state.piano.overlay = Some(Overlay::Slice(t));
-                    }
-                    self.damage_piano();
-                }
-                Drag::ZoomBox { x0, y0 } => {
-                    self.state.piano.overlay = Some(Overlay::ZoomBox(Rect::span(x0.min(x), x0.max(x), y0.min(y), y0.max(y))));
-                    self.damage_piano();
-                }
-                Drag::Marker => {
-                    if let Some(g) = self.piano_geom() {
-                        self.state.piano.marker = g.snap_down(g.tick_at(x) + g.step as f32 / 2.0);
-                    }
-                    self.damage_piano();
-                }
-                Drag::TimeSel { t0 } => {
-                    if let Some(g) = self.piano_geom() {
-                        let t = g.snap_down(g.tick_at(x) + g.step as f32 / 2.0);
-                        piano::select_range(&mut self.state, t0.min(t), t0.max(t));
-                    }
-                    self.damage_piano();
-                }
-                Drag::Scrub { tick } => {
-                    if let Some(g) = self.piano_geom() {
-                        let t = g.tick_at(x).max(0.0);
-                        self.scrub(tick, t);
-                        self.drag = Some(Drag::Scrub { tick: t });
-                        self.state.piano.overlay = Some(Overlay::Scrub(t));
-                    }
-                    self.damage_piano();
-                }
-                Drag::Velocity { last_x, last_y } => {
-                    self.state.piano.dirty = true;
-                    self.paint_velocity(last_x, last_y, x, y);
-                    self.drag = Some(Drag::Velocity { last_x: x, last_y: y });
-                }
-                Drag::ControlErase { last_x } => {
-                    self.erase_control_points(last_x, x);
-                    self.drag = Some(Drag::ControlErase { last_x: x });
-                }
-                Drag::PianoKeys { key } => {
-                    if let Some(g) = self.piano_geom() {
-                        let k = g.key_at(y).clamp(0, views::piano::TOP_KEY);
-                        if k != key {
-                            self.drag = Some(Drag::PianoKeys { key: k });
-                            self.hold_key(Some(k), true);
-                        }
-                    }
-                }
+                d @ (Drag::NoteMove { .. }
+                | Drag::NoteResize { .. }
+                | Drag::NoteErase
+                | Drag::NoteMute { .. }
+                | Drag::NotePaint { .. }
+                | Drag::Marquee { .. }
+                | Drag::Slice
+                | Drag::ZoomBox { .. }
+                | Drag::Marker
+                | Drag::TimeSel { .. }
+                | Drag::Scrub { .. }
+                | Drag::Velocity { .. }
+                | Drag::ControlErase { .. }
+                | Drag::PianoKeys { .. }) => self.piano_drag_move(d, x, y),
                 Drag::Window { win, dx, dy } => {
                     let old = self.win_bounds(win);
                     let pos = ((x - dx).max(0.0), (y - dy).max(views::WORK_Y));
@@ -3074,95 +3013,21 @@ impl App {
                     let new = self.win_bounds(win);
                     self.damage_rect(old.union(&new));
                 }
-                Drag::RackResize { edges, m0, s0 } => {
-                    let old = views::rack::bounds(&self.state);
-                    let s = &mut self.state;
-                    let w = if edges & views::rack::EDGE_RIGHT != 0 { s0.0 + x - m0.0 } else { s0.0 };
-                    let h = if edges & views::rack::EDGE_BOTTOM != 0 { s0.1 + y - m0.1 } else { s0.1 };
-                    s.rack_size = views::rack::snap_size(s, w, h);
-                    let new = views::rack::bounds(&self.state);
-                    self.damage_rect(old.union(&new));
-                }
-                Drag::RackMixer { ch, y0, v0 } => {
-                    // One insert per 10 px, up = higher (spec: ui/channel-rack.md §12).
-                    let v = (i32::from(v0) + ((y0 - y) / crate::rack::MIXER_DRAG).round() as i32).clamp(0, i32::from(crate::mixer::max_insert(&self.state.project))) as u16;
-                    let s = &mut self.state;
-                    if let Some(c) = s.project.channels.get_mut(ch) {
-                        if c.mixer_track != v {
-                            c.mixer_track = v;
-                            s.piano.dirty = true;
-                        }
-                    }
-                    self.hint = Cow::Owned(format!("Target mixer track: {}", views::rack::insert_name(v)));
-                    let r = self.hits.iter().rev().find(|h| h.action == Action::RackMixer(ch)).map(|h| h.rect);
-                    match r {
-                        Some(r) => self.damage_rect(r.outset(2.0)),
-                        None => self.invalidate(),
-                    }
-                    self.damage_rect(HINT_RECT);
-                }
-                Drag::RackPaint { row, on, last } => {
-                    if let Some(k) = views::rack::step_at(&self.state, x) {
-                        if k != last {
-                            for j in last.min(k)..=last.max(k) {
-                                crate::rack::set_step(&mut self.state, row, j, on);
-                            }
-                            self.drag = Some(Drag::RackPaint { row, on, last: k });
-                            self.invalidate();
-                        }
-                    }
-                }
-                Drag::RackSel { from } => {
-                    if let Some(r) = views::rack::row_at(&self.state, y) {
-                        let shown = crate::rack::shown(&self.state);
-                        if let (Some(a), Some(b)) = (shown.iter().position(|&x| x == from), shown.iter().position(|&x| x == r)) {
-                            self.state.rack.sel = shown[a.min(b)..=a.max(b)].iter().copied().collect();
-                        }
-                    }
-                    self.invalidate();
-                }
-                Drag::RackDots { x0, p0 } => {
-                    let w = p0 as f32 / 100.0 * crate::rack::NAME_W + (x - x0);
-                    let pct = (w / crate::rack::NAME_W * 100.0).round().clamp(30.0, 400.0) as u32;
-                    crate::rack::relayout(&mut self.state, |s| s.rack.name_pct = pct);
-                    self.hint = Cow::Owned(format!("Channel button width: {pct}%"));
-                    self.invalidate();
-                }
-                Drag::RackLen { y0, v0 } => {
-                    let v = (v0 as i32 + ((y0 - y) / crate::rack::LEN_DRAG).round() as i32).clamp(0, crate::rack::MAX_STEPS as i32) as u32;
-                    crate::rack::set_len(&mut self.state, (v > 0).then_some(v));
-                    self.hint = Cow::Owned(if v == 0 { "Pattern length: Auto".into() } else { format!("Pattern length: {v} steps") });
-                    self.invalidate();
-                }
-                Drag::RackLoopLen { row, y0, v0 } => {
-                    let v = (v0 as i32 + ((y0 - y) / crate::rack::LEN_DRAG).round() as i32).clamp(1, crate::rack::MAX_STEPS as i32) as u32;
-                    self.state.rack.loop_len.insert(row, v);
-                    self.state.piano.dirty = true;
-                    self.hint = Cow::Owned(format!("Loop point: {v} steps"));
-                    self.invalidate();
-                }
-                Drag::RackGraph => self.rack_graph_at((x, y)),
+                d @ (Drag::RackResize { .. }
+                | Drag::RackMixer { .. }
+                | Drag::RackPaint { .. }
+                | Drag::RackSel { .. }
+                | Drag::RackDots { .. }
+                | Drag::RackLen { .. }
+                | Drag::RackLoopLen { .. }
+                | Drag::RackGraph) => crate::rack::drag_move(self, d, x, y),
                 Drag::PatternBox { y0, p0 } => {
                     let (y0, p0): (f32, u16) = (y0.to_owned(), p0.to_owned());
                     let steps = ((y0 - y) / crate::patterns::DRAG_STEP).trunc() as i32;
                     self.state.pattern = (i32::from(p0) + steps).clamp(1, i32::from(crate::patterns::MAX)) as u16;
                     self.invalidate();
                 }
-                Drag::Fader { track, y0, v0 } => {
-                    let per_px = views::mixer::FADER_PER_PX / f64::from(views::mixer::scale(self.state.win_rect(Win::Mixer)));
-                    let v = (v0 - f64::from(y - y0) * per_px).clamp(0.0, 1.0);
-                    if let Some(t) = self.state.project.mixer.iter_mut().find(|t| t.index == track) {
-                        t.volume = Some(v);
-                        self.state.piano.dirty = true;
-                    }
-                    self.hint = Cow::Owned(crate::mixer::level_text("Volume", v));
-                    let col = self.hits.iter().rev().find(|h| h.action == Action::Fader(track)).map(|h| h.rect);
-                    match col {
-                        Some(r) => self.damage_rect(r.outset(10.0)),
-                        None => self.invalidate(),
-                    }
-                    self.damage_rect(HINT_RECT);
-                }
+                d @ Drag::Fader { .. } => crate::mixer::drag_move(self, d, x, y),
                 Drag::Knob { id, y0, v0 } => {
                     self.state.set_knob(id, v0 - (y - y0) * id.drag_rate());
                     self.hint = Cow::Owned(self.state.knob_text(id));
@@ -3717,305 +3582,6 @@ impl App {
         self.drag = None;
     }
 
-    /// Move (`resize == false`) or resize the dragged notes from their originals, snapped to steps.
-    fn drag_notes(&mut self, x0: f32, y0: f32, orig: &[(usize, Note)], resize: bool) {
-        let Some(g) = self.piano_geom() else { return };
-        let (x, y) = self.mouse;
-        let mut dt = g.snap_delta((x - x0) / g.ppt);
-        let mut held = None;
-        let was_held = self.state.piano.held;
-        let rects = |s: &State| -> Vec<Rect> {
-            let notes = piano::notes(s);
-            orig.iter().filter_map(|&(i, _)| notes.get(i).and_then(|n| g.note_rect(n))).collect()
-        };
-        let mut dirty = rects(&self.state);
-        let s = &mut self.state;
-        let p = piano::pattern_mut(s);
-        if resize {
-            for &(i, o) in orig {
-                if let Some(n) = p.notes.get_mut(i) {
-                    let len = i64::from(o.length.max(g.step)) + dt;
-                    n.length = len.max(i64::from(g.step)) as u32;
-                }
-            }
-            let first = orig.first().and_then(|&(i, _)| p.notes.get(i)).map(|n| n.length);
-            if let Some(len) = first {
-                s.piano.last_len = len;
-            }
-        } else {
-            let dk = (g.key_at(y) - g.key_at(y0)).clamp(-131, 131);
-            // Keep every note at or after tick 0 and inside the key range.
-            let min_pos = orig.iter().map(|(_, o)| i64::from(o.position)).min().unwrap_or(0);
-            dt = dt.max(-min_pos);
-            let lo = orig.iter().map(|(_, o)| i32::from(o.key)).min().unwrap_or(0);
-            let hi = orig.iter().map(|(_, o)| i32::from(o.key)).max().unwrap_or(0);
-            let dk = dk.clamp(-lo, views::piano::TOP_KEY - hi);
-            // The grabbed note (first) is auditioned again whenever its key changes (§8).
-            if let Some(&(_, o)) = orig.first() {
-                let k = i32::from(o.key) + dk;
-                if was_held != Some(k) {
-                    held = Some(k);
-                }
-            }
-            for &(i, o) in orig {
-                if let Some(n) = p.notes.get_mut(i) {
-                    n.position = (i64::from(o.position) + dt) as u32;
-                    n.key = (i32::from(o.key) + dk) as u16;
-                }
-            }
-        }
-        dirty.extend(rects(&self.state));
-        self.damage_notes(&dirty);
-        if held.is_some() {
-            self.hold_key(held, true);
-        }
-    }
-
-    /// Set the key held with the mouse (lit on the keyboard), auditioning it if `play`.
-    fn hold_key(&mut self, key: Option<i32>, play: bool) {
-        if self.state.piano.held == key {
-            return;
-        }
-        self.state.piano.held = key;
-        if let (Some(k), true, Some(ch)) = (key, play, piano::channel(&self.state)) {
-            self.preview(ch, k);
-        }
-        // The keyboard column.
-        match self.piano_grid {
-            Some(g) => self.damage_rect(Rect::new(g.x - 73.0, g.y, 73.0, g.h)),
-            None => self.invalidate(),
-        }
-    }
-
-    /// Damage note rects (old and new) and the velocity-panel columns under them. The overview
-    /// mini-map is refreshed when the drag ends.
-    fn damage_notes(&mut self, rects: &[Rect]) {
-        let (Some(grid), Some(panel)) = (self.piano_grid, self.piano_panel) else { return self.invalidate() };
-        let Some(first) = rects.first() else { return };
-        let u = rects.iter().fold(*first, |a, r| a.union(r)).outset(2.0).intersect(&grid);
-        if u.w > 0.0 && u.h > 0.0 {
-            self.damage_rect(u);
-        }
-        let (x0, x1) = rects.iter().fold((f32::MAX, f32::MIN), |(a, b), r| (a.min(r.x), b.max(r.right())));
-        self.damage_rect(Rect::new(x0 - 6.0, panel.y, x1 - x0 + 12.0, panel.h).intersect(&panel.outset(1.0)));
-    }
-
-    /// Delete this channel's note under (x, y), if any.
-    fn erase_at(&mut self, x: f32, y: f32) {
-        let Some(g) = self.piano_geom() else { return };
-        if !g.grid.contains(x, y) {
-            return;
-        }
-        let ch = piano::channel(&self.state);
-        let hit = piano::notes(&self.state)
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, n)| Some(n.channel) == ch && g.note_rect(n).is_some_and(|r| r.contains(x, y)))
-            .map(|(i, _)| i);
-        if let Some(i) = hit {
-            piano::delete(&mut self.state, vec![i]);
-            self.state.piano.dirty = true;
-            self.damage_piano();
-        }
-    }
-
-    /// Mute tool: give the note under (x, y) the mute state `on`.
-    fn mute_at(&mut self, x: f32, y: f32, on: bool) {
-        let Some(g) = self.piano_geom() else { return };
-        if !g.grid.contains(x, y) {
-            return;
-        }
-        let Some(i) = piano::note_at(&self.state, &g, x, y) else { return };
-        let p = piano::pattern_mut(&mut self.state);
-        if p.notes[i].muted() != on {
-            p.notes[i].set_muted(on);
-            let r = g.note_rect(&p.notes[i]);
-            self.state.piano.dirty = true;
-            match r {
-                Some(r) => self.damage_notes(&[r]),
-                None => self.damage_piano(),
-            }
-        }
-    }
-
-    /// Paint tool: fill `key`'s row with notes `len` apart from `start` up to the mouse (either
-    /// direction), skipping slots that already hold a note of this channel on that key.
-    fn paint_notes(&mut self, key: i32, start: u32, len: u32) {
-        let (Some(g), Some(ch)) = (self.piano_geom(), piano::channel(&self.state)) else { return };
-        let len = len.max(1);
-        let t = g.tick_at(self.mouse.0).max(0.0) as i64;
-        let k = (t - i64::from(start)).div_euclid(i64::from(len));
-        let (a, b) = (k.min(0), k.max(0));
-        let mut added = Vec::new();
-        for j in a..=b {
-            let pos = i64::from(start) + j * i64::from(len);
-            if pos < 0 {
-                continue;
-            }
-            let pos = pos as u32;
-            let taken = piano::notes(&self.state).iter().any(|n| n.channel == ch && i32::from(n.key) == key && n.position == pos);
-            if !taken {
-                let i = piano::add_note(&mut self.state, ch, pos, key);
-                piano::pattern_mut(&mut self.state).notes[i].length = len;
-                added.push(i);
-            }
-        }
-        if !added.is_empty() {
-            self.state.piano.dirty = true;
-            let notes = piano::notes(&self.state);
-            let rects: Vec<Rect> = added.iter().filter_map(|&i| g.note_rect(&notes[i])).collect();
-            self.damage_notes(&rects);
-        }
-    }
-
-    /// Playback tool: sound the notes the scrub line enters between ticks `from` and `to`.
-    fn scrub(&mut self, from: f32, to: f32) {
-        let Some(ch) = piano::channel(&self.state) else { return };
-        let (a, b) = (from.min(to), from.max(to));
-        let mut keys: Vec<i32> = piano::notes(&self.state)
-            .iter()
-            .filter(|n| n.channel == ch && !n.muted())
-            .filter(|n| {
-                let p = n.position as f32;
-                let end = p + piano::shown_len(&self.state, n) as f32;
-                if from == to {
-                    // Press: every note the line touches sounds.
-                    p <= to && to < end
-                } else {
-                    // Drag: notes whose start the line just passed.
-                    p > a && p <= b
-                }
-            })
-            .map(|n| i32::from(n.key))
-            .collect();
-        keys.sort_unstable();
-        keys.dedup();
-        for k in keys {
-            self.preview(ch, k);
-        }
-    }
-
-    /// Zoom tool: zoom the time axis to the dragged box (a click zooms in 2x around the mouse).
-    fn zoom_to(&mut self, x0: f32, y0: f32) {
-        let Some(g) = self.piano_geom() else { return };
-        let (x1, y1) = self.mouse;
-        let p = &mut self.state.piano;
-        let back = (p.px_per_beat, p.scroll_x, p.scroll_y);
-        let ppq = f32::from(self.state.project.ppq.max(4));
-        if (x1 - x0).abs() < 4.0 {
-            let tick = g.tick_at(x1);
-            p.px_per_beat = (p.px_per_beat * 2.0).min(1600.0);
-            p.scroll_x = (tick - (x1 - g.grid.x) * ppq / p.px_per_beat).max(0.0);
-        } else {
-            let (t0, t1) = (g.tick_at(x0.min(x1)).max(0.0), g.tick_at(x0.max(x1)).max(0.0));
-            p.px_per_beat = (g.grid.w / ((t1 - t0).max(1.0) / ppq)).clamp(6.0, 1600.0);
-            p.scroll_x = t0;
-            p.scroll_y = (p.scroll_y + y0.min(y1) - g.grid.y).max(0.0);
-        }
-        p.zoom_back = Some(back);
-        piano::clamp_scroll(&mut self.state, g.grid.h);
-        self.invalidate();
-    }
-
-    /// Zoom tool right-click: fully zoomed out (the normal 96 px/beat view) <-> the last zoom.
-    fn zoom_toggle(&mut self) {
-        let Some(g) = self.piano_geom() else { return };
-        let p = &mut self.state.piano;
-        let normal = PianoState::default().px_per_beat;
-        if (p.px_per_beat - normal).abs() > 0.01 {
-            p.zoom_back = Some((p.px_per_beat, p.scroll_x, p.scroll_y));
-            p.px_per_beat = normal;
-            p.scroll_x = 0.0;
-        } else if let Some((z, sx, sy)) = p.zoom_back {
-            p.zoom_back = Some((p.px_per_beat, p.scroll_x, p.scroll_y));
-            p.px_per_beat = z;
-            p.scroll_x = sx;
-            p.scroll_y = sy;
-        }
-        piano::clamp_scroll(&mut self.state, g.grid.h);
-        self.invalidate();
-    }
-
-    /// Where Ctrl+V pastes (§9): the playhead when it is in view, else the left edge of the view.
-    fn paste_tick(&self) -> u32 {
-        let s = &self.state;
-        let Some(g) = self.piano_geom() else { return 0 };
-        let ppq = f64::from(s.project.ppq.max(1));
-        let head = if self.transport.playing() && !self.transport.song() {
-            (self.transport.tick() * 96.0 / ppq) as f32
-        } else {
-            s.piano.marker as f32
-        };
-        let x = g.x_of(head);
-        let tick = if x >= g.grid.x && x < g.grid.right() { head } else { g.scroll_x };
-        g.snap_down(tick)
-    }
-
-    /// Delete the channel lane's control points between two x positions.
-    fn erase_control_points(&mut self, last_x: f32, x: f32) {
-        let (Some(g), Some(panel)) = (self.piano_geom(), self.piano_panel) else { return };
-        let lane = self.state.piano.lane;
-        let (Some(ch), Some(param)) = (piano::channel(&self.state), lane.param()) else { return };
-        let (a, b) = (last_x.min(x), last_x.max(x));
-        let from = g.snap_down(g.tick_at(a).max(0.0));
-        let to = g.snap_down(g.tick_at(b).max(0.0));
-        if piano::erase_controls(&mut self.state, ch, param, from, to) > 0 {
-            self.damage_rect(panel);
-        }
-    }
-
-    /// Set the event panel's property of this channel's notes whose start lies between the last and
-    /// current x; in a channel lane, set a control point at every snap step the cursor path crosses.
-    fn paint_velocity(&mut self, last_x: f32, last_y: f32, x: f32, y: f32) {
-        let (Some(g), Some(panel)) = (self.piano_geom(), self.piano_panel) else { return };
-        let lane = self.state.piano.lane;
-        if lane.is_channel() {
-            let (Some(ch), Some(param)) = (piano::channel(&self.state), lane.param()) else { return };
-            let center = self.state.piano.pitch_center;
-            let t0 = g.snap_down(g.tick_at(last_x).max(0.0));
-            let t1 = g.snap_down(g.tick_at(x).max(0.0));
-            let (lo, hi) = (t0.min(t1), t0.max(t1));
-            let step = g.step.max(1);
-            // A point is set when the cursor enters a snap step (its value is the path height at the
-            // step's start, as in FL's captured ramps) and on the press; staying inside a step keeps it.
-            let press = last_x == x && last_y == y;
-            let mut t = lo;
-            loop {
-                if t != t0 || (t0 == t1 && press) {
-                    let px = g.x_of(t as f32);
-                    let at = if (x - last_x).abs() < 0.5 { 1.0 } else { ((px - last_x) / (x - last_x)).clamp(0.0, 1.0) };
-                    let y_at = last_y + (y - last_y) * at;
-                    piano::set_control(&mut self.state, ch, param, t, lane.control_at(panel, y_at, center));
-                }
-                if t >= hi {
-                    break;
-                }
-                t += step;
-            }
-            self.damage_rect(panel);
-            return;
-        }
-        let v = lane.value_at(panel, y);
-        let (a, b) = (last_x.min(x) - 3.0, last_x.max(x) + 3.0);
-        let ch = piano::channel(&self.state);
-        let p = piano::pattern_mut(&mut self.state);
-        let mut span: Option<(f32, f32)> = None;
-        for n in p.notes.iter_mut().filter(|n| Some(n.channel) == ch) {
-            let nx = g.x_of(n.position as f32);
-            if nx >= a && nx <= b {
-                lane.set(n, v);
-                let end = g.x_of((n.position + n.length.max(g.step)) as f32);
-                span = Some(span.map_or((nx, end), |(l, r)| (l.min(nx), r.max(end))));
-            }
-        }
-        // Only the panel columns of the changed lollipops (the hint is left alone: a damage
-        // union with the hint panel would cover most of the window).
-        if let Some((l, r)) = span {
-            self.damage_rect(Rect::new(l - 6.0, panel.y, r - l + 12.0, panel.h).intersect(&panel.outset(1.0)));
-        }
-    }
-
     pub fn wheel(&mut self, dx: f32, dy: f32, shift: bool, ctrl: bool) {
         // Scrolling or zooming one window repaints just that window; scrolling the playlist moves its pixels.
         let before = self.damage.clone();
@@ -4493,7 +4059,7 @@ impl App {
         }
     }
 
-    fn preview(&self, channel: u16, key: i32) {
+    pub(crate) fn preview(&self, channel: u16, key: i32) {
         let mut p = self.state.project.clone();
         p.tempo = Some(self.state.tempo);
         let note = Note { key: key.clamp(0, views::piano::TOP_KEY) as u16, length: u32::from(p.ppq.max(4)), ..Note::step(channel, 0) };
@@ -4527,136 +4093,6 @@ impl App {
         let idx = piano::targets(&self.state);
         if piano::shift(&mut self.state, &idx, dt, dk) {
             self.state.piano.dirty = true;
-        }
-    }
-
-    /// Left click in the piano roll (spec: ui/piano-roll.md §8 Draw tool, §9 other tools).
-    fn piano_click(&mut self, a: &Action) {
-        let (x, y) = self.mouse;
-        let Some(g) = self.piano_geom() else { return };
-        let Some(ch) = piano::channel(&self.state) else {
-            self.state.message = Some("Piano roll: no channel selected".into());
-            return;
-        };
-        let tool = self.state.piano.tool;
-        if matches!(a, Action::PianoGrid | Action::PianoNote(_)) && tool != Tool::Draw {
-            let s = &mut self.state;
-            let note = if let Action::PianoNote(i) = *a { Some(i) } else { None };
-            match tool {
-                Tool::Delete => {
-                    piano::snapshot(s);
-                    self.drag = Some(Drag::NoteErase);
-                    self.erase_at(x, y);
-                    return;
-                }
-                Tool::Mute => {
-                    let Some(i) = note else { return };
-                    piano::snapshot(s);
-                    let on = !piano::notes(s)[i].muted();
-                    self.drag = Some(Drag::NoteMute { on });
-                    self.mute_at(x, y, on);
-                    return;
-                }
-                Tool::Paint if note.is_none() => {
-                    piano::snapshot(s);
-                    s.piano.clear_selection();
-                    let key = g.key_at(y).clamp(0, views::piano::TOP_KEY);
-                    let start = g.snap_down(g.tick_at(x));
-                    let i = piano::add_note(s, ch, start, key);
-                    let len = piano::notes(s)[i].length;
-                    s.piano.dirty = true;
-                    self.drag = Some(Drag::NotePaint { key, start, len });
-                    self.hold_key(Some(key), true);
-                    self.damage_piano();
-                    return;
-                }
-                Tool::Slice => {
-                    self.drag = Some(Drag::Slice);
-                    self.state.piano.overlay = Some(Overlay::Slice(g.snap_down(g.tick_at(x) + g.step as f32 / 2.0)));
-                    self.damage_piano();
-                    return;
-                }
-                Tool::Zoom => {
-                    self.drag = Some(Drag::ZoomBox { x0: x, y0: y });
-                    return;
-                }
-                Tool::Playback => {
-                    let t = g.tick_at(x).max(0.0);
-                    self.drag = Some(Drag::Scrub { tick: t });
-                    self.scrub(t, t);
-                    self.state.piano.overlay = Some(Overlay::Scrub(t));
-                    self.damage_piano();
-                    return;
-                }
-                Tool::Select if note.is_none() => {
-                    let base = if self.ctrl { s.piano.selection(s.pattern, Some(ch)) } else { Vec::new() };
-                    s.piano.select(s.pattern, ch, base.clone());
-                    self.drag = Some(Drag::Marquee { x0: x, y0: y, base });
-                    self.damage_piano();
-                    return;
-                }
-                Tool::Select => {
-                    // Clicking an unselected note selects it (Ctrl adds), then drags as Draw does.
-                    let i = note.unwrap_or(0);
-                    let mut sel = s.piano.selection(s.pattern, Some(ch));
-                    if !sel.contains(&i) {
-                        if !self.ctrl {
-                            sel.clear();
-                        }
-                        sel.push(i);
-                        s.piano.select(s.pattern, ch, sel);
-                    }
-                }
-                // Paint on a note: drags that one note like Draw (no group move).
-                _ => s.piano.clear_selection(),
-            }
-        }
-        let s = &mut self.state;
-        match *a {
-            Action::PianoGrid => {
-                piano::snapshot(s);
-                s.piano.clear_selection();
-                let i = piano::add_note(s, ch, g.snap_down(g.tick_at(x)), g.key_at(y));
-                let n = piano::notes(s)[i];
-                s.piano.last_len = n.length;
-                self.drag = Some(Drag::NoteMove { x0: x, y0: y, orig: vec![(i, n)] });
-                self.hold_key(Some(i32::from(n.key)), true);
-            }
-            Action::PianoNote(i) => {
-                let Some(&n) = piano::notes(s).get(i) else { return };
-                piano::snapshot(s);
-                let sel = s.piano.selection(s.pattern, Some(ch));
-                let idx = if sel.contains(&i) && tool.moves_groups() {
-                    sel
-                } else {
-                    s.piano.clear_selection();
-                    vec![i]
-                };
-                let notes = piano::notes(s);
-                // The clicked note first: it is the one auditioned while dragging.
-                let orig: Vec<(usize, Note)> =
-                    std::iter::once(i).chain(idx.into_iter().filter(|&j| j != i)).filter_map(|j| notes.get(j).map(|&m| (j, m))).collect();
-                s.piano.last_len = n.length.max(g.step);
-                let nr = g.note_rect(&n).unwrap_or_default();
-                self.drag = Some(if x >= nr.right() - resize_zone(nr.w) {
-                    self.resize_cursor = true;
-                    Drag::NoteResize { x0: x, orig }
-                } else {
-                    self.hold_key(Some(i32::from(n.key)), true);
-                    Drag::NoteMove { x0: x, y0: y, orig }
-                });
-            }
-            Action::PianoVelocity => {
-                piano::snapshot(s);
-                self.drag = Some(Drag::Velocity { last_x: x, last_y: y });
-                self.paint_velocity(x, y, x, y);
-            }
-            Action::PianoKeys => {
-                let k = g.key_at(y).clamp(0, views::piano::TOP_KEY);
-                self.drag = Some(Drag::PianoKeys { key: k });
-                self.hold_key(Some(k), true);
-            }
-            _ => {}
         }
     }
 
@@ -4927,11 +4363,7 @@ impl App {
                     self.state.message = Some(m);
                 }
             }
-            Action::Fader(t) => {
-                crate::mixer::select(s, t, self.ctrl);
-                let v0 = s.project.mixer.iter().find(|m| m.index == t).and_then(|m| m.volume).unwrap_or(0.8);
-                self.drag = Some(Drag::Fader { track: t, y0: self.mouse.1, v0 });
-            }
+            Action::Fader(t) => crate::mixer::press_fader(self, t),
             Action::ChannelSelect(_) | Action::RackSelect(_) => {}
             Action::RackRollView => s.rack_roll_view = !s.rack_roll_view,
             Action::RackRoll(i) => {
@@ -5062,197 +4494,6 @@ impl App {
             piano::center_keys(s, self.piano_grid.map_or(700.0, |g| g.h));
         }
         s.selected_channel = i;
-    }
-
-    /// Name button click (spec: ui/channel-rack.md §13): opens the channel's plugin window, or closes it when open.
-    fn toggle_channel_window(&mut self, i: usize) {
-        if self.state.hosted_rows.contains(&i) {
-            if !self.plugins.close_if_open(i) {
-                self.state.pending_open = Some(i);
-            }
-            return;
-        }
-        let s = &mut self.state;
-        if s.project.channels.get(i).is_some_and(|c| c.kind.is_sampler()) {
-            // Not hosted yet (just added): Lemon Sampler starts on the next tick and its window opens then.
-            s.pending_open = Some(i);
-            self.sampler_failed.retain(|&r| r != i);
-        } else if s.shown(Win::Plugin) && s.plugin_channel == i {
-            s.hide(Win::Plugin);
-        } else {
-            if !s.shown(Win::Plugin) {
-                let r = views::rack::rect(s);
-                s.plugin_pos = ((r.right() + 8.0).min(1920.0 - 440.0), r.y.min(1080.0 - 210.0));
-            }
-            s.plugin_channel = i;
-            s.raise(Win::Plugin);
-        }
-    }
-
-    /// Press on a step (spec: ui/channel-rack.md §9): selects the row, toggles the step, starts painting.
-    fn rack_step(&mut self, i: usize, k: u32) {
-        self.state.rack.select_only(i);
-        self.focus_channel(i);
-        let s = &mut self.state;
-        s.piano.clear_selection();
-        // A step past an explicit length grows the pattern to the bar holding it (§5).
-        if let Some(l) = crate::rack::explicit_len(s) {
-            if k >= l {
-                crate::rack::set_len(s, Some((k / 16 + 1) * 16));
-            }
-        }
-        let on = crate::rack::toggle_step(s, i, k);
-        self.drag = Some(Drag::RackPaint { row: i, on, last: k });
-    }
-
-    /// Speaker (spec: ui/channel-rack.md §7): plays the current pattern; while it plays, pauses / resumes.
-    fn rack_speaker(&mut self) {
-        match self.transport.state() {
-            TransportState::Playing if !self.state.song_mode => self.transport.pause(),
-            TransportState::Paused if !self.state.song_mode => self.transport.resume(),
-            _ => {
-                if self.transport.playing() {
-                    self.transport.stop();
-                }
-                self.state.song_mode = false;
-                self.start_playback();
-            }
-        }
-    }
-
-    /// Graph editor click / drag at a screen point (spec: ui/channel-rack.md §14).
-    fn rack_graph_at(&mut self, (x, y): (f32, f32)) {
-        let Some(b) = views::rack::graph_bars(&self.state) else { return };
-        let Some(k) = views::rack::step_at(&self.state, x) else { return };
-        let v = ((b.bottom() - y) / b.h).clamp(0.0, 1.0);
-        if let Some(t) = crate::rack::graph_set(&mut self.state, k, v) {
-            self.hint = Cow::Owned(t);
-        }
-        self.invalidate();
-    }
-
-    /// Channel rack left clicks (spec: ui/channel-rack.md §7-15, §22). Returns whether `a` was one.
-    fn rack_act(&mut self, a: &Action) -> bool {
-        use crate::rack as rk;
-        let (shift, ctrl, alt) = (self.shift, self.ctrl, self.alt);
-        let now = std::time::Instant::now();
-        let double = matches!(&self.rack_click, Some((p, t)) if p == a && now.duration_since(*t).as_millis() < 400);
-        if matches!(a, Action::RackSelect(_) | Action::RackMixer(_)) {
-            self.rack_click = if double { None } else { Some((a.clone(), now)) };
-        }
-        let mouse = self.mouse;
-        match *a {
-            Action::RackSelect(i) => {
-                if double {
-                    self.state.rack.sel = rk::shown(&self.state).into_iter().collect();
-                } else if shift {
-                    let sel = &mut self.state.rack.sel;
-                    if !sel.remove(&i) {
-                        sel.insert(i);
-                    }
-                } else {
-                    self.state.rack.select_only(i);
-                    self.focus_channel(i);
-                    self.drag = Some(Drag::RackSel { from: i });
-                }
-            }
-            Action::ChannelSelect(i) => {
-                if shift {
-                    let at = views::rack::name_rect(&self.state, i).map_or(mouse, |r| (r.x, r.y));
-                    rk::open_box(&mut self.state, rk::RBox::Channel(i), at);
-                } else if !ctrl {
-                    self.state.rack.select_only(i);
-                    self.focus_channel(i);
-                    self.toggle_channel_window(i);
-                }
-            }
-            Action::ChannelEnable(i) => {
-                let s = &mut self.state;
-                if ctrl || alt {
-                    rk::solo(s, i);
-                } else if shift {
-                    rk::toggle_lock(s, i);
-                } else {
-                    rk::toggle_mute(s, i);
-                }
-            }
-            Action::Step(i, k) => self.rack_step(i, k),
-            Action::RackMixer(i) => {
-                let s = &mut self.state;
-                if double {
-                    if let Some(t) = s.project.channels.get(i).map(|c| c.mixer_track) {
-                        s.selected_mixer = t;
-                        s.raise(Win::Mixer);
-                    }
-                } else {
-                    let v0 = s.project.channels.get(i).map_or(0, |c| c.mixer_track);
-                    self.drag = Some(Drag::RackMixer { ch: i, y0: mouse.1, v0 });
-                }
-            }
-            Action::RackOptions => {
-                let p = rk::options_menu(&self.state, self.state.rack_pos.0, self.state.rack_pos.1 + 28.0);
-                self.state.playlist.popup = Some(p);
-            }
-            Action::RackFilter => {
-                let p = rk::filter_menu(&self.state, mouse.0, mouse.1 + 8.0);
-                self.state.playlist.popup = Some(p);
-            }
-            Action::RackDots => self.drag = Some(Drag::RackDots { x0: mouse.0, p0: self.state.rack.name_pct }),
-            Action::RackSpeaker => self.rack_speaker(),
-            Action::RackLen => self.drag = Some(Drag::RackLen { y0: mouse.1, v0: rk::len_value(&self.state) }),
-            Action::RackLoop => {
-                let s = &mut self.state;
-                rk::relayout(s, |s| s.rack.loop_mode = !s.rack.loop_mode);
-                s.piano.dirty = true;
-            }
-            Action::RackGraph => self.state.rack.graph_open = !self.state.rack.graph_open,
-            Action::RackLoopBox(i) => self.drag = Some(Drag::RackLoopLen { row: i, y0: mouse.1, v0: rk::row_len(&self.state, i) }),
-            Action::RackGraphArea => {
-                self.rack_graph_at(mouse);
-                self.drag = Some(Drag::RackGraph);
-            }
-            Action::RackGraphTab(i) => self.state.rack.graph_tab = rk::Tab::ALL[i.min(rk::Tab::ALL.len() - 1)],
-            Action::RackFill(h) => rk::fill_hit(&mut self.state, h),
-            _ => return false,
-        }
-        self.invalidate();
-        true
-    }
-
-    /// Channel rack right clicks (spec: ui/channel-rack.md §8-19). Returns whether `a` was one.
-    fn rack_right(&mut self, a: &Action) -> bool {
-        use crate::knobs::KnobId;
-        use crate::rack as rk;
-        let (x, y) = self.mouse;
-        let s = &self.state;
-        let popup = match *a {
-            Action::ChannelSelect(i) => rk::channel_menu(s, i, x, y),
-            Action::ChannelEnable(i) => rk::led_menu(s, i, x, y),
-            Action::RackMixer(i) => rk::mixer_menu(s, i, x, y),
-            Action::Knob(k @ (KnobId::ChanVol(_) | KnobId::ChanPan(_) | KnobId::Swing)) => rk::knob_menu(s, k, self.automation_target(a), x, y),
-            Action::RackFilter => rk::filter_edit_menu(s, x, y),
-            Action::RackLen => rk::length_menu(s, x, y),
-            Action::RackLoop => rk::loop_menu(s, x, y),
-            Action::RackSelect(i) => {
-                let sel = &mut self.state.rack.sel;
-                if !sel.remove(&i) {
-                    sel.insert(i);
-                }
-                return true;
-            }
-            Action::Step(i, k) => {
-                self.rack_step(i, k);
-                return true;
-            }
-            Action::RackGraphArea => {
-                self.rack_graph_at((x, y));
-                self.drag = Some(Drag::RackGraph);
-                return true;
-            }
-            _ => return false,
-        };
-        self.state.playlist.popup = Some(popup);
-        true
     }
 
     /// Channels whose deletion was confirmed go now (spec: ui/channel-rack.md §18).

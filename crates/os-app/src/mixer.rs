@@ -3,12 +3,14 @@
 //!
 // spec: ui/mixer.md (every interaction), flp/events/mixer.md (what is stored), audio/gain-laws.md (fader law)
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use os_model::{MixerTrack, Rgb};
 
-use crate::app::{App, State};
+use crate::app::{Action, App, Drag, State, Win, HINT_RECT};
 use crate::playlist::{Cmd, EditTarget, Mark, PItem, Popup};
+use crate::views;
 
 /// Mixer controls (the view registers them as `Action::Mix`). Controls that are not available yet (title-bar view
 /// buttons, input pin, latency clock, disk recording, input / output combos, track equalizer) are greyed out with
@@ -1009,6 +1011,36 @@ pub fn fx_info(p: &os_model::Project, ui: &MixerUi, key: usize) -> Option<crate:
         range: 2,
         track: t,
     })
+}
+
+/// Press on a fader (spec: ui/mixer.md): selects its track and starts dragging it.
+pub(crate) fn press_fader(app: &mut App, t: u16) {
+    let s = &mut app.state;
+    select(s, t, app.ctrl);
+    let v0 = s.project.mixer.iter().find(|m| m.index == t).and_then(|m| m.volume).unwrap_or(0.8);
+    app.drag = Some(Drag::Fader { track: t, y0: app.mouse.1, v0 });
+}
+
+/// A mixer drag moved to (`x`, `y`) (`App::mouse_move`).
+pub(crate) fn drag_move(app: &mut App, d: Drag, _x: f32, y: f32) {
+    match d {
+        Drag::Fader { track, y0, v0 } => {
+            let per_px = views::mixer::FADER_PER_PX / f64::from(views::mixer::scale(app.state.win_rect(Win::Mixer)));
+            let v = (v0 - f64::from(y - y0) * per_px).clamp(0.0, 1.0);
+            if let Some(t) = app.state.project.mixer.iter_mut().find(|t| t.index == track) {
+                t.volume = Some(v);
+                app.state.piano.dirty = true;
+            }
+            app.hint = Cow::Owned(crate::mixer::level_text("Volume", v));
+            let col = app.hits.iter().rev().find(|h| h.action == Action::Fader(track)).map(|h| h.rect);
+            match col {
+                Some(r) => app.damage_rect(r.outset(10.0)),
+                None => app.invalidate(),
+            }
+            app.damage_rect(HINT_RECT);
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
