@@ -2963,7 +2963,7 @@ impl App {
         if fl.is_dir() {
             dlg = dlg.set_directory(fl);
         }
-        if let Some(p) = crate::dialog::modal(|| dlg.pick_file()) {
+        if let Some(p) = crate::dialog::pick_file(dlg) {
             self.load_theme_file(&p);
         }
     }
@@ -6003,6 +6003,21 @@ mod tests {
         std::fs::remove_file(fl).unwrap();
         std::fs::remove_dir(local).unwrap();
         std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn sample_and_theme_dialogs_cancel_without_mutation() {
+        let mut app = App::new(None);
+        let project = app.state.project.clone();
+        let theme = app.theme.clone();
+        let before = crate::dialog::fake::shown();
+        crate::dialog::fake::answer(None);
+        crate::rack::run(&mut app, crate::rack::RCmd::LoadSample(0));
+        assert_eq!(app.state.project, project);
+        assert!(app.state.sample_loads.is_empty());
+        app.theme_dialog();
+        assert_eq!(app.theme, theme);
+        assert_eq!(crate::dialog::fake::shown(), (before.0 + 2, before.1));
     }
 
     fn frame(app: &mut App, c: &mut Canvas, damage: Option<Rect>) {

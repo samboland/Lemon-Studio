@@ -1242,7 +1242,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
         RCmd::MoveSel(d) => move_selected(app, d),
         RCmd::Sort(by) => sort(app, by),
         RCmd::LoadSample(r) => {
-            if let Some(p) = crate::dialog::modal(|| rfd::FileDialog::new().add_filter("Audio", &["wav", "mp3", "flac", "ogg", "aif", "aiff"]).pick_file()) {
+            if let Some(p) = crate::dialog::pick_file(rfd::FileDialog::new().add_filter("Audio", &["wav", "mp3", "flac", "ogg", "aif", "aiff"])) {
                 let s = &mut app.state;
                 let path = p.to_string_lossy().into_owned();
                 if let Some(ch) = s.project.channels.get_mut(r) {

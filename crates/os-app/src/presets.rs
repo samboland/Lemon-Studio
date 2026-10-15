@@ -284,9 +284,9 @@ fn save_as(app: &mut App, key: usize) -> Option<String> {
     let dir = dir_for(&h.plugin)?;
     let _ = std::fs::create_dir_all(&dir);
     let start = app.plugins.presets.get(&key).map(|p| shown_name(p)).unwrap_or_else(|| "New preset".into());
-    let target = crate::dialog::modal(|| {
-        rfd::FileDialog::new().set_title("Save preset as").set_directory(&dir).set_file_name(format!("{start}.{EXT}")).add_filter("Lemon Studio preset", &[EXT]).save_file()
-    })?;
+    let target = crate::dialog::save_file(
+        rfd::FileDialog::new().set_title("Save preset as").set_directory(&dir).set_file_name(format!("{start}.{EXT}")).add_filter("Lemon Studio preset", &[EXT]),
+    )?;
     let target = if target.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXT)) { target } else { target.with_extension(EXT) };
     Some(match save(&target, &h, &state) {
         Ok(()) => {
@@ -379,6 +379,12 @@ mod tests {
         assert_eq!(h.plugin, "Lemon Sampler");
         assert!(h.id.starts_with("clap:"));
         let state = app.plugins.state(0).unwrap();
+        let before = crate::dialog::fake::shown();
+        crate::dialog::fake::answer(None);
+        assert_eq!(run(&mut app, PCmd::SaveAs(0)), None);
+        assert_eq!(crate::dialog::fake::shown(), (before.0, before.1 + 1));
+        assert_eq!(app.plugins.state(0), Some(state.clone()));
+        assert!(list_in(&dir_for(&h.plugin).unwrap()).is_empty());
         // Two presets: the default state, and one with a sample path.
         save(&file_for(&dir_for(&h.plugin).unwrap(), "Default"), &h, &state).unwrap();
         let other = crate::plugins::with_sample_path(&state, "C:/x/kick.wav").unwrap();

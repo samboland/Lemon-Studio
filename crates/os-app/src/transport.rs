@@ -1108,6 +1108,10 @@ impl Session {
 
 /// An output stream in the device's sample format.
 fn build_any(device: &cpal::Device, format: SampleFormat, config: &StreamConfig, renderer: Renderer) -> Result<cpal::Stream, String> {
+    #[cfg(test)]
+    if std::env::var_os("LEMON_TEST_NO_AUDIO").is_some() {
+        return Err("Audio output disabled for this test process".into());
+    }
     match format {
         SampleFormat::F32 => build::<f32>(device, config, renderer),
         SampleFormat::I16 => build::<i16>(device, config, renderer),
