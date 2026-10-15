@@ -507,11 +507,9 @@ pub fn window_buttons(c: &mut Canvas, t: &Palette, x0: f32, y: f32, hovered: Opt
         let hov = hovered == Some(i);
         if hov && lemon::on(t) {
             lemon::window_button_hover(c, t, b, i == 2);
-        } else if hov {
-            c.fill_rrect(b, 3.0, if i == 2 { t.record.with_alpha(170) } else { t.button_hi });
         }
-        let ink = if pressed == Some(i) && !lemon::on(t) {
-            caption_pressed(c, b)
+        let ink = if (hov || pressed == Some(i)) && !lemon::on(t) {
+            caption_highlight(c, b)
         } else if hov { t.tx(0xffffff) } else { t.text_dim.mix(t.glyph, 0.6) };
         if i == 1 && !maximized {
             c.stroke_rrect(Rect::new(b.cx() - 4.0, b.cy() - 3.0, 8.0, 6.0), if lemon::on(t) { 1.0 } else { 0.0 }, 1.0, ink);
@@ -523,8 +521,8 @@ pub fn window_buttons(c: &mut Canvas, t: &Palette, x0: f32, y: f32, hovered: Opt
     out
 }
 
-/// Native caption press: an orange outline and glyph on the existing dark face.
-pub fn caption_pressed(c: &mut Canvas, r: Rect) -> Color {
+/// Native caption hover/press: an orange outline and glyph on the existing dark face.
+pub fn caption_highlight(c: &mut Canvas, r: Rect) -> Color {
     c.stroke_rrect(r.outset(1.0), 5.0, 1.5, Color::rgb(0xff9637));
     Color::rgb(0xff9e38)
 }
