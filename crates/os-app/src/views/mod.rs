@@ -196,6 +196,8 @@ pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, maximized: bool) {
             hovered = Some(i);
         }
     }
+    // Native Classic caption buttons keep their fill and glyph on hover.
+    let hovered = if lemon(ui) { hovered } else { None };
     kit::window_buttons(ui.c, ui.t, x0, y, hovered, maximized);
 }
 

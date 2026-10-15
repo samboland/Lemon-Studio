@@ -118,7 +118,7 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
     ] {
         let hov = ui.hit(r, action.clone(), hint);
         let on = on || ui.down(r, &action);
-        // Lit / hovered sections fill their whole slot of the capsule (clipped to its round end).
+        // Classic lights the active/pressed transport, without a hover fill.
         if (on || hov) && lemon {
             let seg = Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0);
             if on {
@@ -126,13 +126,9 @@ fn row1(ui: &mut Ui, s: &State, f: &FrameInfo) {
             } else {
                 ui.c.fill_rrect(seg, 5.0, t.button_hi);
             }
-        } else if on || hov {
+        } else if on {
             ui.c.push_clip(r);
-            if on {
-                ui.c.fill_rect_gradient(capsule.inset(1.0), t.on_top, t.on_bottom, 14.0);
-            } else {
-                ui.c.fill_rrect(capsule.inset(1.0), 14.0, t.button_hi.with_alpha(110));
-            }
+            ui.c.fill_rect_gradient(capsule.inset(1.0), t.on_top, t.on_bottom, 14.0);
             ui.c.pop_clip();
         }
         let g = Rect::new(r.x + 8.0, r.y + 8.0, r.w - 16.0, r.h - 16.0);
@@ -394,7 +390,7 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
         let open = s.menu_open == Some(i);
         if lemon && open {
             os_ui::kit::lemon::lit(ui.c, r.inset(1.0), 4.0, false);
-        } else if hov || open {
+        } else if (lemon && hov) || open {
             ui.c.fill_rrect(if lemon { r.inset(1.0) } else { r }, if lemon { 4.0 } else { 2.0 }, t.menu_drop_hi);
         }
         ui.c.text(Font::condensed(menus::BAR_FONT.size, width as u16), x0, 51.0, if lemon && open { t.pill_text } else { t.menu_text }, title);

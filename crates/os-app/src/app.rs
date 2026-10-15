@@ -104,6 +104,7 @@ pub const TITLE_H: f32 = 23.0;
 pub enum Cursor {
     Default,
     Pointer,
+    Pencil,
     EwResize,
     NsResize,
     NwseResize,
@@ -3608,9 +3609,27 @@ impl App {
             _ => 0,
         };
         match edges {
-            0 if self.drag.is_none() && matches!(self.hover, Some(Action::Settings(views::settings::SAct::Tab(_)))) => Cursor::Pointer,
             0 if self.resize_cursor => Cursor::EwResize,
-            0 => Cursor::Default,
+            0 => {
+                if matches!(self.drag, Some(Drag::Fader { .. })) {
+                    return Cursor::NsResize;
+                }
+                if self.drag.is_some() {
+                    return Cursor::Default;
+                }
+                use crate::mixer::MHit;
+                match &self.hover {
+                    Some(Action::Menu(_) | Action::Play | Action::Stop
+                        | Action::MinWin(_) | Action::MaxWin(_) | Action::CloseWin(_)
+                        | Action::Settings(views::settings::SAct::Tab(_) | views::settings::SAct::Close)
+                        | Action::PianoTool(_) | Action::PianoToolsMenu | Action::PianoKeys
+                        | Action::Mix(MHit::Led(_) | MHit::Polarity(_) | MHit::Swap(_)
+                            | MHit::SlotName(_) | MHit::SlotArrow(_) | MHit::SlotLed(_))) => Cursor::Pointer,
+                    Some(Action::Fader(_)) => Cursor::NsResize,
+                    Some(Action::PianoGrid) if self.state.piano.tool == piano::Tool::Draw => Cursor::Pencil,
+                    _ => Cursor::Default,
+                }
+            }
             views::rack::EDGE_RIGHT => Cursor::EwResize,
             views::rack::EDGE_BOTTOM => Cursor::NsResize,
             _ => Cursor::NwseResize,

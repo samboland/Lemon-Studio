@@ -6,7 +6,7 @@ use std::f32::consts::PI;
 use os_ui::kit::lemon as lk;
 use os_ui::{Color, Font, Glyph, Rect};
 
-use super::{led, resize_zones, window_body, window_buttons, FrameInfo};
+use super::{resize_zones, window_body, window_buttons, FrameInfo};
 use crate::knobs::KnobId;
 use crate::app::{Action, Live, State, Ui, Win, TITLE_H};
 use crate::meters;
@@ -386,7 +386,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
 
     let enabled = track.is_none_or(|m| m.enabled);
     ui.hit(Rect::new(kx - 7.0, ly.y(LED_Y) - 7.0, 14.0, 14.0), Action::Mix(MHit::Led(n)), "Mute / solo");
-    led(ui, kx, ly.y(LED_Y), enabled);
+    mixer_led(ui, kx, ly.y(LED_Y), enabled);
     let pan = KnobId::MixPan(n);
     ui.hit(Rect::new(kx - 14.0, ly.y(PAN_Y) - 14.0, 28.0, 28.0), Action::Knob(pan), s.knob_text(pan));
     mixer_knob(ui, kx, ly.y(PAN_Y), 10.5, 15.0, s.knob(pan), Some(true));
@@ -394,13 +394,13 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     // Reverse polarity (⇕) and swap left / right (⇔) buttons, lit when on, then the separation knob (§4).
     let (pol, swp) = (track.is_some_and(|m| m.polarity), track.is_some_and(|m| m.swap));
     let pr = Rect::new(sx - 8.0, ly.y(SEP_Y) - 8.0, 16.0, 16.0);
-    let hp = ui.hit(pr, Action::Mix(MHit::Polarity(n)), "Reverse polarity");
+    let hp = ui.hit(pr, Action::Mix(MHit::Polarity(n)), "Reverse polarity") && lemon;
     let mut g = Glyph::new();
     g.polygon(&[(sx - 5.0, ly.y(SEP_Y) - 1.5), (sx, ly.y(SEP_Y) - 6.0), (sx + 5.0, ly.y(SEP_Y) - 1.5)]);
     g.polygon(&[(sx - 5.0, ly.y(SEP_Y) + 1.5), (sx, ly.y(SEP_Y) + 6.0), (sx + 5.0, ly.y(SEP_Y) + 1.5)]);
     ui.c.glyph(if pol { ui.t.h(0xf3b234) } else if hp { ui.t.tx(0xffffff) } else { ui.t.tx(0xb7c3ca) }, &g);
     let wr = Rect::new(sx - 8.0, ly.y(SWAP_Y) - 8.0, 16.0, 16.0);
-    let hw = ui.hit(wr, Action::Mix(MHit::Swap(n)), "Swap left & right channels");
+    let hw = ui.hit(wr, Action::Mix(MHit::Swap(n)), "Swap left & right channels") && lemon;
     let mut g = Glyph::new();
     g.polygon(&[(sx - 1.0, ly.y(SWAP_Y) - 6.0), (sx - 7.0, ly.y(SWAP_Y)), (sx - 1.0, ly.y(SWAP_Y) + 6.0)]);
     g.polygon(&[(sx + 1.5, ly.y(SWAP_Y) - 6.0), (sx + 7.5, ly.y(SWAP_Y)), (sx + 1.5, ly.y(SWAP_Y) + 6.0)]);
@@ -491,7 +491,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
 /// The dark round mixer knob: a shaded ball inside a darker halo.
 /// `arc`: Some(true) draws the red value arc from the top (pan style), Some(false) from the start.
 fn mixer_knob(ui: &mut Ui, cx: f32, cy: f32, r: f32, halo: f32, value: f32, arc: Option<bool>) {
-    let hov = ui.hovering(Rect::new(cx - halo, cy - halo, 2.0 * halo, 2.0 * halo));
+    let hov = super::lemon(ui) && ui.hovering(Rect::new(cx - halo, cy - halo, 2.0 * halo, 2.0 * halo));
     let look = os_ui::kit::KnobLook::Mixer { halo, arc: arc.is_some() };
     os_ui::kit::knob(ui.c, ui.t, cx, cy, r, value, arc.unwrap_or(false), look, os_ui::kit::State::hover(hov));
 }
@@ -526,7 +526,14 @@ fn fader_value(db: f32) -> f32 {
 
 /// Fader handle centred on (cx, cy): 14 × 23.
 fn fader_handle(ui: &mut Ui, cx: f32, cy: f32, selected: bool, hov: bool) {
+    let hov = super::lemon(ui) && hov;
     os_ui::kit::fader_handle(ui.c, ui.t, cx, cy, selected, os_ui::kit::State::hover(hov));
+}
+
+/// Native Mixer LEDs keep their ring unchanged on hover.
+fn mixer_led(ui: &mut Ui, cx: f32, cy: f32, on: bool) {
+    let hov = super::lemon(ui) && ui.hovering(Rect::new(cx - 6.0, cy - 6.0, 12.0, 12.0));
+    os_ui::kit::led(ui.c, ui.t, cx, cy, 6.0, os_ui::kit::State::hover(hov).with_on(on));
 }
 
 fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
@@ -587,12 +594,12 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
             lk::outlined(ui.c, Rect::new(row.x + 2.0, row.y, row.w - 4.0, row.h), lk::r_btn(t).min(row.h / 2.0), ui.t.s(0x1f2224), face);
         } else {
             let cell = Rect::new(row.x, row.y, row.w, 33.0 * kp);
-            ui.c.fill_rect(cell, if hov { ui.t.s(0x2f3335) } else { ui.t.s(0x2a2d2f) });
+            ui.c.fill_rect(cell, ui.t.s(0x2a2d2f));
             ui.c.fill_rect(Rect::new(cell.x, cell.bottom() - 1.0, cell.w, 1.0), ui.t.s(0x1f2224));
         }
         let ax = row.x + 10.0;
         let ay = row.cy();
-        ui.c.fill_polygon(&[(ax - 4.0, ay - 2.0), (ax + 4.0, ay - 2.0), (ax, ay + 3.0)], if ha { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
+        ui.c.fill_polygon(&[(ax - 4.0, ay - 2.0), (ax + 4.0, ay - 2.0), (ax, ay + 3.0)], if super::lemon(ui) && ha { ui.t.tx(0xffffff) } else { ui.t.tx(0xc4ccd0) });
         match &plugin {
             Some(p) => ui.c.text_clip(Font::new(fs), row.x + 19.0, row.y + 4.0 * kp, 140.0, ui.t.tx(0xc9d0d4), p),
             None => ui.c.text_clip(Font::new(fs).italic(), row.x + 19.0, row.y + 4.0 * kp, 140.0, ui.t.s(0x50575b), &format!("Slot {}", i + 1)),
@@ -602,7 +609,7 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
         mixer_knob(ui, row.right() - 33.0, row.cy(), 10.5 * q, 12.0 * q, s.knob(mix), Some(false));
         ui.c.stroke_circle(row.right() - 33.0, row.cy(), 11.8 * q, 1.5, ui.t.s(0x55595c));
         ui.hit(Rect::new(row.right() - 18.0, row.y, 18.0, row.h), Action::Mix(MHit::SlotLed(k)), "Mute / solo  (ctrl)0..9");
-        led(ui, row.right() - 10.0, row.cy(), track.is_none_or(|m| m.slot_on[i]));
+        mixer_led(ui, row.right() - 10.0, row.cy(), track.is_none_or(|m| m.slot_on[i]));
     }
     let sep = r.y + 61.0 + 330.0 * kp;
     ui.c.fill_rect(Rect::new(r.x, sep, r.w, 1.0), ui.t.s(0x1f2224));

@@ -45,3 +45,12 @@ Classic context menu hover uses dark gray with light text, matching native FL.
 General Settings slider rails use two device pixels, with shaded oval handles.
 Classic Mixer FX slots use horizontal separators and downward menu arrows,
 following the captured FL Studio Wide layout.
+
+Classic hover behavior follows the captured FL controls. Menu titles, Play, Stop,
+window buttons, and Piano roll tools retain their idle appearance. Mixer faders,
+knobs, mute switches, polarity buttons, channel-swap buttons, and effect slots do too.
+Active tools, playing transport, and enabled Mixer buttons keep their active states.
+Window buttons and tools show a hand cursor. Mixer faders show a vertical
+adjustment cursor. Piano roll keys show a hand; the Draw grid shows a pencil.
+Window edges and note ends keep their resize cursors. Lemon design retains its
+hover highlights.

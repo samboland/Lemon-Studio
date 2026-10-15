@@ -13,6 +13,7 @@ mod audio_bench;
 mod render_check;
 mod browser;
 mod cpu;
+mod cursors;
 mod dialog;
 mod enable_groups;
 mod icons;
@@ -82,6 +83,7 @@ struct Shell {
     /// warped. Otherwise (Windows, X11) it is warped back to the anchor after each move.
     pointer_locked: bool,
     cursor: app::Cursor,
+    pencil_cursor: Option<winit::window::CustomCursor>,
     /// Main-window border in device pixels (left, top, right, bottom); zero when maximized.
     inset: (u32, u32, u32, u32),
     /// The border edge under the mouse (drags resize the OS window).
@@ -318,14 +320,16 @@ impl Shell {
         };
         if c != self.cursor {
             self.cursor = c;
-            window.set_cursor(match c {
-                app::Cursor::Default => CursorIcon::Default,
-                app::Cursor::Pointer => CursorIcon::Pointer,
-                app::Cursor::EwResize => CursorIcon::EwResize,
-                app::Cursor::NsResize => CursorIcon::NsResize,
-                app::Cursor::NwseResize => CursorIcon::NwseResize,
-                app::Cursor::NeswResize => CursorIcon::NeswResize,
-            });
+            let cursor: winit::window::Cursor = match c {
+                app::Cursor::Default => CursorIcon::Default.into(),
+                app::Cursor::Pointer => CursorIcon::Pointer.into(),
+                app::Cursor::EwResize => CursorIcon::EwResize.into(),
+                app::Cursor::NsResize => CursorIcon::NsResize.into(),
+                app::Cursor::NwseResize => CursorIcon::NwseResize.into(),
+                app::Cursor::NeswResize => CursorIcon::NeswResize.into(),
+                app::Cursor::Pencil => self.pencil_cursor.clone().map(Into::into).unwrap_or(CursorIcon::Crosshair.into()),
+            };
+            window.set_cursor(cursor);
         }
     }
 
@@ -480,6 +484,7 @@ impl ApplicationHandler for Shell {
             attrs.with_window_icon(linux_icon())
         };
         let window = Rc::new(el.create_window(attrs).expect("create window"));
+        self.pencil_cursor = Some(el.create_custom_cursor(cursors::pencil(window.scale_factor())));
         let context = softbuffer::Context::new(window.clone()).expect("graphics context");
         self.surface = Some(softbuffer::Surface::new(&context, window.clone()).expect("surface"));
         // Hosted plugins: windows are owned by the main window; scanning loads the .clap files found.
@@ -793,6 +798,11 @@ impl ApplicationHandler for Shell {
             // Windows display scale changed, or the window moved to a monitor with another DPI: the canvas follows at
             // the next paint; docked plugin windows are redrawn at the new scale (spec: ui/ui-scaling.md §3).
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.pencil_cursor = Some(el.create_custom_cursor(cursors::pencil(scale_factor)));
+                if self.cursor == app::Cursor::Pencil {
+                    self.cursor = app::Cursor::Default;
+                    self.sync_cursor(&window);
+                }
                 self.app.plugins.set_scale(scale_factor as f32);
                 self.inset = insets(&window);
                 self.app.invalidate();
@@ -1345,6 +1355,7 @@ fn main() {
         lock: None,
         pointer_locked: false,
         cursor: app::Cursor::Default,
+        pencil_cursor: None,
         inset: (0, 0, 0, 0),
         edge: None,
         grab: None,

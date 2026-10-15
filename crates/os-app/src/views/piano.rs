@@ -321,8 +321,6 @@ fn toolbar(ui: &mut Ui, r: Rect, shift: f32, active: Tool) {
             if on { lk::ink_on_lemon() } else { t.glyph }
         } else if on {
             t.editor_tool_active
-        } else if hov {
-            ui.t.tx(0xffffff)
         } else {
             t.glyph
         };
