@@ -37,7 +37,9 @@ Classic context menus use a neutral gray panel and regular black system text.
 Window options arrows point down, following the native Playlist, Piano roll, and Mixer.
 Classic Piano roll keys use smooth shading instead of visible color bands.
 The compact keyboard scales black-key length with keyboard width.
-The active Piano roll tool uses the native gold color independently of PAT/SONG highlighting.
+The active Piano roll tool uses its native color and rounded outline.
+Enabled Classic Mixer polarity and channel-swap switches use the theme highlight
+with the same outline. Open Classic menu titles use a dark inset and white text.
 Floating windows show a maximize square; maximized windows show the restore glyph.
 The Control selector follows native menu sizing and selection styling.
 Its popup paints above child windows and stays inside the main window.

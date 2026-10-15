@@ -366,6 +366,11 @@ pub fn button_face(ui: &mut Ui, r: Rect, look: Look) {
     kit::button(ui.c, ui.t, r, look.state());
 }
 
+/// Outline shared by selected Classic editor tools and enabled Mixer switches.
+pub fn selection_outline(ui: &mut Ui, r: Rect, color: Color) {
+    ui.c.stroke_rrect(r, 5.0, 1.5, color);
+}
+
 /// A 30×33 toolbar button (§1). `on` draws the orange "on" state.
 /// An `Action::Placeholder` button is not available yet: drawn greyed out, never lit (`Ui::off`).
 pub fn tool_button(ui: &mut Ui, r: Rect, icon: Icon, on: bool, action: Action, hint: &'static str) {

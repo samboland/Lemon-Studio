@@ -320,7 +320,18 @@ fn toolbar(ui: &mut Ui, r: Rect, shift: f32, active: Tool) {
             }
             if on { lk::ink_on_lemon() } else { t.glyph }
         } else if on {
-            t.editor_tool_active
+            // Native tool selection keeps the dark face, with a tool-colored outline and glyph.
+            let (ink, outline) = match active {
+                Tool::Draw => (t.editor_tool_active, Color::rgb(0xffbc40)),
+                Tool::Paint => (Color::rgb(0x7dd0ff), Color::rgb(0x77c5f2)),
+                Tool::Delete => (Color::rgb(0xff5f56), Color::rgb(0xff5b53)),
+                Tool::Mute => (Color::rgb(0xff56b2), Color::rgb(0xff53a9)),
+                Tool::Slice | Tool::Zoom => (Color::rgb(0x86b5ff), Color::rgb(0x80acff)),
+                Tool::Select => (Color::rgb(0xffb464), Color::rgb(0xffab60)),
+                Tool::Playback => (Color::rgb(0xffa84d), Color::rgb(0xffa04a)),
+            };
+            super::selection_outline(ui, b.outset(1.0), outline);
+            ink
         } else {
             t.glyph
         };

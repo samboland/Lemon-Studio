@@ -390,10 +390,14 @@ fn row2(ui: &mut Ui, s: &State, f: &FrameInfo) {
         let open = s.menu_open == Some(i);
         if lemon && open {
             os_ui::kit::lemon::lit(ui.c, r.inset(1.0), 4.0, false);
-        } else if (lemon && hov) || open {
-            ui.c.fill_rrect(if lemon { r.inset(1.0) } else { r }, if lemon { 4.0 } else { 2.0 }, t.menu_drop_hi);
+        } else if lemon && hov {
+            ui.c.fill_rrect(r.inset(1.0), 4.0, t.menu_drop_hi);
+        } else if open {
+            ui.c.fill_rect(r, t.s(0x1b1e20));
+            ui.c.fill_rect(r.inset(1.0 / ui.c.scale), t.s(0x283031));
         }
-        ui.c.text(Font::condensed(menus::BAR_FONT.size, width as u16), x0, 51.0, if lemon && open { t.pill_text } else { t.menu_text }, title);
+        let ink = if open { if lemon { t.pill_text } else { t.tx(0xffffff) } } else { t.menu_text };
+        ui.c.text(Font::condensed(menus::BAR_FONT.size, width as u16), x0, 51.0, ink, title);
     }
 
     // Main volume and main pitch (project values; spec: audio/mixer.md "Main volume", audio/voice-levels.md).

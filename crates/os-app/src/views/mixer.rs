@@ -395,16 +395,23 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let (pol, swp) = (track.is_some_and(|m| m.polarity), track.is_some_and(|m| m.swap));
     let pr = Rect::new(sx - 8.0, ly.y(SEP_Y) - 8.0, 16.0, 16.0);
     let hp = ui.hit(pr, Action::Mix(MHit::Polarity(n)), "Reverse polarity") && lemon;
+    let switch_ink = ui.t.h(0xfe8c37);
+    if pol && !lemon {
+        super::selection_outline(ui, Rect::new(sx - 10.0, ly.y(SEP_Y) - 7.0, 20.0, 14.0), switch_ink.shade(-0.05));
+    }
     let mut g = Glyph::new();
     g.polygon(&[(sx - 5.0, ly.y(SEP_Y) - 1.5), (sx, ly.y(SEP_Y) - 6.0), (sx + 5.0, ly.y(SEP_Y) - 1.5)]);
     g.polygon(&[(sx - 5.0, ly.y(SEP_Y) + 1.5), (sx, ly.y(SEP_Y) + 6.0), (sx + 5.0, ly.y(SEP_Y) + 1.5)]);
-    ui.c.glyph(if pol { ui.t.h(0xf3b234) } else if hp { ui.t.tx(0xffffff) } else { ui.t.tx(0xb7c3ca) }, &g);
+    ui.c.glyph(if pol { if lemon { ui.t.h(0xf3b234) } else { switch_ink } } else if hp { ui.t.tx(0xffffff) } else { ui.t.tx(0xb7c3ca) }, &g);
     let wr = Rect::new(sx - 8.0, ly.y(SWAP_Y) - 8.0, 16.0, 16.0);
     let hw = ui.hit(wr, Action::Mix(MHit::Swap(n)), "Swap left & right channels") && lemon;
+    if swp && !lemon {
+        super::selection_outline(ui, Rect::new(sx - 10.0, ly.y(SWAP_Y) - 7.0, 20.0, 14.0), switch_ink.shade(-0.05));
+    }
     let mut g = Glyph::new();
     g.polygon(&[(sx - 1.0, ly.y(SWAP_Y) - 6.0), (sx - 7.0, ly.y(SWAP_Y)), (sx - 1.0, ly.y(SWAP_Y) + 6.0)]);
     g.polygon(&[(sx + 1.5, ly.y(SWAP_Y) - 6.0), (sx + 7.5, ly.y(SWAP_Y)), (sx + 1.5, ly.y(SWAP_Y) + 6.0)]);
-    ui.c.glyph(if swp { Color::rgb(0x5fb6f0) } else if hw { ui.t.tx(0xffffff) } else { ui.t.tx(0xb7c3ca) }, &g);
+    ui.c.glyph(if swp { if lemon { Color::rgb(0x5fb6f0) } else { switch_ink } } else if hw { ui.t.tx(0xffffff) } else { ui.t.tx(0xb7c3ca) }, &g);
     ui.c.fill_rect(Rect::new(sx - 0.5, ly.y(SWAP_Y) - 6.0, 1.0, 12.0), ui.t.s(0x5a6266));
     let sep = KnobId::MixSep(n);
     ui.hit(Rect::new(sx - 9.0, ly.y(RING_Y) - 9.0, 18.0, 18.0), Action::Knob(sep), s.knob_text(sep));
