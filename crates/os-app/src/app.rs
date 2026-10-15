@@ -923,6 +923,8 @@ pub struct App {
     pub hover: Option<Action>,
     /// Action under the cursor while the left button is held (pressed look of buttons).
     pub pressed: Option<Action>,
+    /// Caption buttons commit on release inside the same control; outside release cancels the click.
+    caption_press: Option<Action>,
     hover_rect: Option<Rect>,
     damage: Damage,
     /// Typing keyboard (spec: ui/typing-keyboard.md): keys held now as (physical key, rack row,
@@ -1081,6 +1083,7 @@ impl App {
             bars: Vec::new(),
             hover: None,
             pressed: None,
+            caption_press: None,
             hover_rect: None,
             damage: Damage::Full,
             typing_held: Vec::new(),
@@ -3508,6 +3511,7 @@ impl App {
 
     pub fn mouse_down(&mut self) {
         self.invalidate();
+        self.caption_press = None;
         let (x, y) = self.mouse;
         let action = self.top_hit(x, y).map(|h| h.action.clone());
         self.pressed = action.clone();
@@ -3552,6 +3556,10 @@ impl App {
         }
         self.raise_under_mouse();
         if let Some(a) = action {
+            if matches!(a, Action::MinWin(_) | Action::MaxWin(_) | Action::CloseWin(_) | Action::Settings(views::settings::SAct::Close)) {
+                self.caption_press = Some(a);
+                return;
+            }
             self.act(a);
         }
         self.rack_pending();
@@ -3901,12 +3909,26 @@ impl App {
         }
     }
 
+    pub fn cancel_caption_press(&mut self) {
+        if self.caption_press.take().is_some() {
+            self.pressed = None;
+            self.invalidate();
+        }
+    }
+
     pub fn mouse_up(&mut self) {
         if matches!(self.drag, Some(Drag::BrowserResize { .. })) {
             crate::browser::save_width(self.state.browser_width);
         }
         let pressed = self.pressed.take();
-        // A click without a drag did its work on the press (painted then): its release only lifts the pressed look.
+        if let Some(action) = self.caption_press.take() {
+            if self.top_hit(self.mouse.0, self.mouse.1).is_some_and(|h| h.action == action) {
+                self.act(action);
+            }
+            self.invalidate();
+            return;
+        }
+        // Other clicks without a drag did their work on the press; release lifts their pressed look.
         if self.drag.is_none() {
             let rect = pressed.as_ref().and_then(|a| self.hits.iter().rev().find(|h| &h.action == a)).map(|h| h.rect);
             match (pressed, rect) {
@@ -6870,6 +6892,65 @@ mod tests {
         app.mouse_down();
         app.mouse_up();
         frame(app, c, None);
+    }
+
+    #[test]
+    fn caption_buttons_wait_for_release_and_cancel_outside() {
+        let mut c = Canvas::new(1920, 1080, 1.0).unwrap();
+        for win in [Win::Playlist, Win::Mixer, Win::PianoRoll] {
+            for action in [Action::MinWin(win), Action::MaxWin(win), Action::CloseWin(win)] {
+                let mut app = App::new(None);
+                app.state.z = vec![win];
+                frame(&mut app, &mut c, None);
+                let rect = hit_rect(&app, &action);
+                let slot = win.slot().unwrap();
+                let before = app.state.wins[slot];
+                app.mouse_move(rect.cx(), rect.cy());
+                app.mouse_down();
+                assert!(app.state.shown(win), "{action:?} must wait for release");
+                assert_eq!((app.state.wins[slot].maxed, app.state.wins[slot].mini), (before.maxed, before.mini));
+                app.mouse_move(rect.x - 60.0, rect.bottom() + 50.0);
+                app.mouse_up();
+                assert!(app.state.shown(win), "outside release cancels {action:?}");
+                assert_eq!((app.state.wins[slot].maxed, app.state.wins[slot].mini), (before.maxed, before.mini));
+                assert!(app.pressed.is_none() && app.caption_press.is_none());
+                frame(&mut app, &mut c, None);
+                click(&mut app, &mut c, rect);
+                match action {
+                    Action::MinWin(_) => assert_ne!(app.state.wins[slot].mini, before.mini),
+                    Action::MaxWin(_) => assert_ne!(app.state.wins[slot].maxed, before.maxed),
+                    Action::CloseWin(_) => assert!(!app.state.shown(win)),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settings_close_waits_for_release_and_popup_dismissal_does_not_arm_it() {
+        let mut c = Canvas::new(1920, 1080, 1.0).unwrap();
+        let mut app = App::new(None);
+        app.open_settings(2);
+        frame(&mut app, &mut c, None);
+        let rect = hit_rect(&app, &Action::Settings(views::settings::SAct::Close));
+        app.mouse_move(rect.cx(), rect.cy());
+        app.mouse_down();
+        assert!(app.state.settings.open);
+        app.mouse_move(rect.x - 60.0, rect.bottom() + 50.0);
+        app.mouse_up();
+        assert!(app.state.settings.open);
+        app.mouse_move(rect.cx(), rect.cy());
+        app.mouse_down();
+        app.cancel_caption_press();
+        app.mouse_up();
+        assert!(app.state.settings.open && app.pressed.is_none());
+        app.state.playlist.popup = Some(views::settings::panel_menu(&app.state, 400.0, 400.0));
+        frame(&mut app, &mut c, None);
+        click(&mut app, &mut c, rect);
+        assert!(app.state.settings.open && app.state.playlist.popup.is_none());
+        assert!(app.caption_press.is_none());
+        click(&mut app, &mut c, rect);
+        assert!(!app.state.settings.open);
     }
 
     /// Settings window (spec: ui/settings.md): OPTIONS entries open their tab, tabs switch, checks and

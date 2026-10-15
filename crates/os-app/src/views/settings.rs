@@ -662,7 +662,10 @@ pub fn paint(ui: &mut Ui, s: &State) {
     ui.c.icon(&os_ui::tabler::SETTINGS, Rect::new(r.x + 2.0, r.y + 5.0, 14.0, 14.0), t.text_dim);
     let x = Rect::new(r.right() - 23.0, r.y + 3.0, 17.0, 17.0);
     let hov = ui.hit(x, Action::Settings(SAct::Close), "Close");
-    ui.c.icon(&os_ui::tabler::X, x.inset(3.0), if lemon && hov { t.glyph } else { t.text });
+    let ink = if !lemon && ui.down(x, &Action::Settings(SAct::Close)) {
+        kit::caption_pressed(ui.c, x)
+    } else if lemon && hov { t.glyph } else { t.text };
+    ui.c.icon(&os_ui::tabler::X, x.inset(3.0), ink);
     // Classic tabs follow the FL Settings tab shape and selection color.
     let font = Font::system(12).bold();
     let menu = Rect::new(r.right() - 23.0, r.y + 34.0, 17.0, 26.0);

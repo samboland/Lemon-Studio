@@ -724,6 +724,7 @@ impl ApplicationHandler for Shell {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Right | MouseButton::Middle, .. } => {
                 self.unlock_cursor(&window);
+                self.app.cancel_caption_press();
                 self.app.mouse_up();
                 self.pending = true;
             }
@@ -791,6 +792,7 @@ impl ApplicationHandler for Shell {
                 if !focused {
                     self.grab = None;
                     self.unmax = None;
+                    self.app.cancel_caption_press();
                     self.app.typing_release_all();
                     window.request_redraw();
                 }

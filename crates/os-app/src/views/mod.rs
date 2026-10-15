@@ -184,6 +184,7 @@ pub fn resize_zones(ui: &mut Ui, s: &State, win: Win, r: Rect) {
 /// Minimize / maximize / close buttons from `x0` at the title bar of a window at top `y`.
 pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, maximized: bool) {
     let mut hovered = None;
+    let mut pressed = None;
     for (i, (hint, action)) in [
         ("Minimize window", Action::MinWin(win)),
         ("Maximize / restore window", Action::MaxWin(win)),
@@ -192,13 +193,17 @@ pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, maximized: bool) {
     .into_iter()
     .enumerate()
     {
-        if ui.hit(Rect::new(x0 + i as f32 * 19.5, y + 3.0, 17.0, 17.0), action, hint) {
+        let rect = Rect::new(x0 + i as f32 * 19.5, y + 3.0, 17.0, 17.0);
+        if ui.down(rect, &action) {
+            pressed = Some(i);
+        }
+        if ui.hit(rect, action, hint) {
             hovered = Some(i);
         }
     }
     // Native Classic caption buttons keep their fill and glyph on hover.
     let hovered = if lemon(ui) { hovered } else { None };
-    kit::window_buttons(ui.c, ui.t, x0, y, hovered, maximized);
+    kit::window_buttons(ui.c, ui.t, x0, y, hovered, pressed, maximized);
 }
 
 /// Window frame with a title bar (§5); the bar drags the window. `buttons` = draw the window
